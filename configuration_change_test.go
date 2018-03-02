@@ -18,72 +18,60 @@ func TestConfigurationChange(t *testing.T) {
 		p2     = NewLocalProposer(2, log.With(logger, "p", 2), a1, a2, a3)
 		p3     = NewLocalProposer(3, log.With(logger, "p", 3), a1, a2, a3)
 		ctx    = context.Background()
+		val0   = "xxx"
 	)
 
-	// Set up and confirm.
-	const val0 = "xxx"
+	// Declare some verification functions.
+	growClusterWith := func(a Acceptor) {
+		if err := GrowCluster(ctx, a, p1, p2, p3); err != nil {
+			t.Fatalf("grow cluster with %q: %v", a.Address(), err)
+		}
+	}
+
+	shrinkClusterWith := func(a Acceptor) {
+		if err := ShrinkCluster(ctx, a, p1, p2, p3); err != nil {
+			t.Fatalf("shrink cluster with %q: %v", a.Address(), err)
+		}
+	}
+
+	verifyValue := func(a *MemoryAcceptor) {
+		if want, have := val0, string(a.dumpValue()); want != have {
+			t.Errorf("acceptor %s value: want %q, have %q", a.Address(), want, have)
+		}
+	}
+
+	verifyReads := func() {
+		for name, p := range map[string]Proposer{
+			"p1": p1, "p2": p2, "p3": p3,
+		} {
+			if state, err := p.Propose(ctx, changeFuncRead); err != nil {
+				t.Errorf("read via %s after shrink: %v", name, err)
+			} else if want, have := val0, string(state); want != have {
+				t.Errorf("read via %s after shrink: want %q, have %q", name, want, have)
+			}
+		}
+	}
+
+	// Set up an initial value.
 	p2.Propose(ctx, changeFuncInitializeOnlyOnce(val0))
-	for _, p := range []Proposer{p1, p2, p3} {
-		state, err := p.Propose(ctx, changeFuncRead)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if want, have := val0, string(state); want != have {
-			t.Fatalf("want %q, have %q", want, have)
-		}
-	}
 
-	// Start the new acceptor and add it in.
+	// Add a new acceptor; it should have the correct value.
 	a4 := NewMemoryAcceptor("4")
-	if err := GrowCluster(ctx, a4, p1, p2, p3); err != nil {
-		t.Fatalf("grow cluster: %v", err)
-	}
+	growClusterWith(a4)
+	verifyValue(a4)
+	verifyReads()
 
-	// It should have the correct value.
-	if want, have := val0, string(a4.dumpValue()); want != have {
-		t.Errorf("first new acceptor value: want %q, have %q", want, have)
-	}
-
-	// Start another new acceptor and add it in.
+	// Add another acceptor, same deal.
 	a5 := NewMemoryAcceptor("5")
-	if err := GrowCluster(ctx, a5, p1, p2, p3); err != nil {
-		t.Fatalf("grow cluster again: %v", err)
-	}
+	growClusterWith(a5)
+	verifyValue(a5)
+	verifyReads()
 
-	// It should have the correct value.
-	if want, have := val0, string(a5.dumpValue()); want != have {
-		t.Errorf("second new acceptor value: want %q, have %q", want, have)
-	}
+	// Remove one of the initial acceptors; reads should still work.
+	shrinkClusterWith(a1)
+	verifyReads()
 
-	// Remove one of the initial acceptors.
-	if err := ShrinkCluster(ctx, a1, p1, p2, p3); err != nil {
-		t.Fatalf("shrink cluster: %v", err)
-	}
-
-	// Reads should still work.
-	for name, p := range map[string]Proposer{
-		"p1": p1, "p2": p2, "p3": p3,
-	} {
-		if state, err := p.Propose(ctx, changeFuncRead); err != nil {
-			t.Fatalf("read %s after first shrink: %v", name, err)
-		} else if want, have := val0, string(state); want != have {
-			t.Fatalf("read %s after first shrink: want %q, have %q", name, want, have)
-		}
-	}
-
-	// Remove one of the newly-added acceptors.
-	if err := ShrinkCluster(ctx, a4, p1, p2, p3); err != nil {
-		t.Fatalf("shrink cluster again: %v", err)
-	}
-
-	// Reads should still work.
-	for name, p := range map[string]Proposer{
-		"p1": p1, "p2": p2, "p3": p3,
-	} {
-		if state, err := p.Propose(ctx, changeFuncRead); err != nil {
-			t.Fatalf("read %s after second shrink: %v", name, err)
-		} else if want, have := val0, string(state); want != have {
-			t.Fatalf("read %s after second shrink: want %q, have %q", name, want, have)
-		}
-	}
+	// Remove one of the newly-added acceptors, same deal.
+	shrinkClusterWith(a4)
+	verifyReads()
 }
