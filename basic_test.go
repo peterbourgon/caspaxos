@@ -101,3 +101,36 @@ func TestFastForward(t *testing.T) {
 		}
 	}
 }
+
+func TestMultiKeyReads(t *testing.T) {
+	// Build the cluster.
+	var (
+		logger = log.NewLogfmtLogger(testWriter{t})
+		a1     = NewMemoryAcceptor("1")
+		a2     = NewMemoryAcceptor("2")
+		a3     = NewMemoryAcceptor("3")
+		p1     = NewLocalProposer(1, log.With(logger, "p", 1), a1, a2, a3)
+		p2     = NewLocalProposer(2, log.With(logger, "p", 2), a1, a2, a3)
+		p3     = NewLocalProposer(3, log.With(logger, "p", 3), a1, a2, a3)
+		ctx    = context.Background()
+	)
+
+	// If we write a key through one proposer...
+	p1.Propose(ctx, "k1", changeFuncInitializeOnlyOnce("v1"))
+
+	// And a different key through another proposer...
+	p2.Propose(ctx, "k2", changeFuncInitializeOnlyOnce("v2"))
+
+	// Reads should work through a still-different proposer.
+	if val, err := p3.Propose(ctx, "k1", changeFuncRead); err != nil {
+		t.Errorf("read k1 via p3: %v", err)
+	} else if want, have := "v1", string(val); want != have {
+		t.Errorf("read k1 via p3: want %q, have %q", want, have)
+	}
+	if val, err := p3.Propose(ctx, "k2", changeFuncRead); err != nil {
+		t.Errorf("read k2 via p3: %v", err)
+	} else if want, have := "v2", string(val); want != have {
+		t.Errorf("read k2 via p3: want %q, have %q", want, have)
+	}
+
+}

@@ -22,7 +22,7 @@ type Acceptor interface {
 
 // Addresser models something with a unique address.
 type Addresser interface {
-	Address() string // "protocol://host:port"
+	Address() string // typically "protocol://host:port"
 }
 
 // Preparer models the first-phase responsibilities of an acceptor.
@@ -40,7 +40,7 @@ type ChangeFunc func(current []byte) (new []byte)
 
 var (
 	// ErrPrepareFailed indicates a failure during the first "prepare" phase.
-	ErrPrepareFailed = errors.New("not enough confirmations during prepare phase")
+	ErrPrepareFailed = errors.New("not enough confirmations during prepare phase; proposer ballot was fast-forwarded")
 
 	// ErrAcceptFailed indicates a failure during the first "accept" phase.
 	ErrAcceptFailed = errors.New("not enough confirmations during accept phase")

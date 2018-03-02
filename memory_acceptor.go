@@ -126,5 +126,5 @@ type ConflictError struct {
 }
 
 func (ce ConflictError) Error() string {
-	return fmt.Sprintf("conflict: proposed ballot %+v isn't greater than existing ballot %+v", ce.Proposed, ce.Existing)
+	return fmt.Sprintf("conflict: proposed ballot %s isn't greater than existing ballot %s", ce.Proposed, ce.Existing)
 }
