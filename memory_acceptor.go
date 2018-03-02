@@ -19,9 +19,8 @@ type acceptedValue struct {
 	value    []byte
 }
 
+// The zero ballot can be used to clear promises.
 var zeroballot Ballot
-
-var _ Acceptor = (*MemoryAcceptor)(nil)
 
 // NewMemoryAcceptor returns a usable in-memory acceptor.
 // Useful primarily for testing.

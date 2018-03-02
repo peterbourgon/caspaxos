@@ -17,8 +17,8 @@ type Proposer interface {
 	RemoveAccepter(target Acceptor) error
 }
 
-// Assign special meaning to the zero/empty key "", which we use to iterate
-// ballot numbers and other protocol operations.
+// Assign special meaning to the zero/empty key "", which we use to increment
+// ballot numbers for operations like changing cluster configuration.
 const zerokey = ""
 
 // Note: When growing (or shrinking) a cluster from an odd number of acceptors
