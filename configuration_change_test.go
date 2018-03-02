@@ -18,6 +18,7 @@ func TestConfigurationChange(t *testing.T) {
 		p2     = NewLocalProposer(2, log.With(logger, "p", 2), a1, a2, a3)
 		p3     = NewLocalProposer(3, log.With(logger, "p", 3), a1, a2, a3)
 		ctx    = context.Background()
+		key    = "k"
 		val0   = "xxx"
 	)
 
@@ -34,17 +35,11 @@ func TestConfigurationChange(t *testing.T) {
 		}
 	}
 
-	verifyValue := func(a *MemoryAcceptor) {
-		if want, have := val0, string(a.dumpValue()); want != have {
-			t.Errorf("acceptor %s value: want %q, have %q", a.Address(), want, have)
-		}
-	}
-
 	verifyReads := func() {
 		for name, p := range map[string]Proposer{
 			"p1": p1, "p2": p2, "p3": p3,
 		} {
-			if state, err := p.Propose(ctx, changeFuncRead); err != nil {
+			if state, err := p.Propose(ctx, key, changeFuncRead); err != nil {
 				t.Errorf("read via %s after shrink: %v", name, err)
 			} else if want, have := val0, string(state); want != have {
 				t.Errorf("read via %s after shrink: want %q, have %q", name, want, have)
@@ -52,26 +47,34 @@ func TestConfigurationChange(t *testing.T) {
 		}
 	}
 
-	// Set up an initial value.
-	p2.Propose(ctx, changeFuncInitializeOnlyOnce(val0))
+	verifyValue := func(a *MemoryAcceptor) {
+		if want, have := val0, string(a.dumpValue(key)); want != have {
+			t.Errorf("acceptor %s value: want %q, have %q", a.Address(), want, have)
+		}
+	}
 
-	// Add a new acceptor; it should have the correct value.
+	// Set up an initial value.
+	p2.Propose(ctx, key, changeFuncInitializeOnlyOnce(val0))
+
+	// Add a new acceptor. After one or more reads,
+	// it should have the correct value.
 	a4 := NewMemoryAcceptor("4")
 	growClusterWith(a4)
-	verifyValue(a4)
 	verifyReads()
+	verifyValue(a4)
 
 	// Add another acceptor, same deal.
 	a5 := NewMemoryAcceptor("5")
 	growClusterWith(a5)
-	verifyValue(a5)
 	verifyReads()
+	verifyValue(a5)
 
-	// Remove one of the initial acceptors; reads should still work.
+	// Remove one of the initial acceptors.
+	// Reads should still work.
 	shrinkClusterWith(a1)
 	verifyReads()
 
-	// Remove one of the newly-added acceptors, same deal.
+	// Remove one of the new acceptors, same deal.
 	shrinkClusterWith(a4)
 	verifyReads()
 }

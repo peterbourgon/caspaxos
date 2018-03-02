@@ -22,10 +22,15 @@ func TestInitializeOnlyOnce(t *testing.T) {
 
 	// Model an Initialize-Only-Once distributed register
 	// (i.e. Synod) with an idempotent change function.
-	const val0 = "val0"
+	var (
+		key, val0          = "k", "val0"
+		initialize         = changeFuncInitializeOnlyOnce(val0)
+		differentInit      = changeFuncInitializeOnlyOnce("alternate value")
+		stillDifferentInit = changeFuncInitializeOnlyOnce("abcdefghijklmno")
+	)
 
 	// The first proposal should work.
-	have, err := p1.Propose(ctx, changeFuncInitializeOnlyOnce(val0))
+	have, err := p1.Propose(ctx, key, initialize)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -34,14 +39,14 @@ func TestInitializeOnlyOnce(t *testing.T) {
 	}
 
 	// If we make a read from anywhere, we should see the right thing.
-	have, err = p2.Propose(ctx, changeFuncRead)
+	have, err = p2.Propose(ctx, key, changeFuncRead)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if want, have := "val0", string(have); want != have {
 		t.Errorf("want %q, have %q", want, have)
 	}
-	have, err = p3.Propose(ctx, changeFuncRead)
+	have, err = p3.Propose(ctx, key, changeFuncRead)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -50,14 +55,14 @@ func TestInitializeOnlyOnce(t *testing.T) {
 	}
 
 	// Subsequent proposals should succeed but leave the value un-altered.
-	have, err = p2.Propose(ctx, changeFuncInitializeOnlyOnce("alternative value"))
+	have, err = p2.Propose(ctx, key, differentInit)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if want, have := "val0", string(have); want != have {
 		t.Errorf("want %q, have %q", want, have)
 	}
-	have, err = p3.Propose(ctx, changeFuncInitializeOnlyOnce("must not succeed"))
+	have, err = p3.Propose(ctx, key, stillDifferentInit)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -80,16 +85,16 @@ func TestFastForward(t *testing.T) {
 	)
 
 	// Set an initial value, and increment the ballot a few times.
-	const val0 = "asdf"
-	p1.Propose(ctx, changeFuncInitializeOnlyOnce(val0)) // ballot is incremented
-	p1.Propose(ctx, changeFuncRead)                     // incremented again
-	p1.Propose(ctx, changeFuncRead)                     // and again
+	const key, val0 = "k", "asdf"
+	p1.Propose(ctx, key, changeFuncInitializeOnlyOnce(val0)) // ballot is incremented
+	p1.Propose(ctx, key, changeFuncRead)                     // incremented again
+	p1.Propose(ctx, key, changeFuncRead)                     // and again
 
 	// Make sure reads thru other proposers succeed.
 	for name, p := range map[string]*LocalProposer{
 		"p2": p2, "p3": p3,
 	} {
-		if val, err := p.Propose(ctx, changeFuncRead); err != nil {
+		if val, err := p.Propose(ctx, key, changeFuncRead); err != nil {
 			t.Errorf("%s second read: got unexpected error: %v", name, err)
 		} else if want, have := val0, string(val); want != have {
 			t.Errorf("%s second read: want %q, have %q", name, want, have)

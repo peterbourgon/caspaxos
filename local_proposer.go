@@ -27,12 +27,12 @@ type Addresser interface {
 
 // Preparer models the first-phase responsibilities of an acceptor.
 type Preparer interface {
-	Prepare(ctx context.Context, b Ballot) (value []byte, current Ballot, err error)
+	Prepare(ctx context.Context, key string, b Ballot) (value []byte, current Ballot, err error)
 }
 
 // Accepter models the second-phase responsibilities of an acceptor.
 type Accepter interface {
-	Accept(ctx context.Context, b Ballot, value []byte) error
+	Accept(ctx context.Context, key string, b Ballot, value []byte) error
 }
 
 // ChangeFunc models client change proposals.
@@ -80,19 +80,19 @@ func NewLocalProposer(id uint64, logger log.Logger, initial ...Acceptor) *LocalP
 }
 
 // Propose a change from a client into the cluster.
-func (p *LocalProposer) Propose(ctx context.Context, f ChangeFunc) (newState []byte, err error) {
+func (p *LocalProposer) Propose(ctx context.Context, key string, f ChangeFunc) (newState []byte, err error) {
 	p.mtx.Lock()
 	defer p.mtx.Unlock()
 
-	newState, err = p.propose(ctx, f)
+	newState, err = p.propose(ctx, key, f)
 	if err == ErrPrepareFailed {
-		newState, err = p.propose(ctx, f) // allow a single retry, to hide fast-forwards
+		newState, err = p.propose(ctx, key, f) // allow a single retry, to hide fast-forwards
 	}
 
 	return newState, err
 }
 
-func (p *LocalProposer) propose(ctx context.Context, f ChangeFunc) (newState []byte, err error) {
+func (p *LocalProposer) propose(ctx context.Context, key string, f ChangeFunc) (newState []byte, err error) {
 	// From the paper: "A client submits the change function to a proposer. The
 	// proposer generates a ballot number B, by incrementing the current ballot
 	// number's counter."
@@ -128,7 +128,7 @@ func (p *LocalProposer) propose(ctx context.Context, f ChangeFunc) (newState []b
 		logger.Log("broadcast_to", len(p.preparers))
 		for addr, target := range p.preparers {
 			go func(addr string, target Preparer) {
-				value, ballot, err := target.Prepare(ctx, b)
+				value, ballot, err := target.Prepare(ctx, key, b)
 				results <- result{addr, value, ballot, err}
 			}(addr, target)
 		}
@@ -208,7 +208,7 @@ func (p *LocalProposer) propose(ctx context.Context, f ChangeFunc) (newState []b
 		logger.Log("broadcast_to", len(p.accepters))
 		for addr, target := range p.accepters {
 			go func(addr string, target Accepter) {
-				err := target.Accept(ctx, b, newState)
+				err := target.Accept(ctx, key, b, newState)
 				results <- result{addr, err}
 			}(addr, target)
 		}

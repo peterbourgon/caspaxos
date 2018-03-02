@@ -9,13 +9,17 @@ import (
 
 // Proposer models a concrete proposer.
 type Proposer interface {
-	Propose(ctx context.Context, f ChangeFunc) (newState []byte, err error)
+	Propose(ctx context.Context, key string, f ChangeFunc) (newState []byte, err error)
 
 	AddAccepter(target Acceptor) error
 	AddPreparer(target Acceptor) error
 	RemovePreparer(target Acceptor) error
 	RemoveAccepter(target Acceptor) error
 }
+
+// Assign special meaning to the zero/empty key "", which we use to iterate
+// ballot numbers and other protocol operations.
+const zerokey = ""
 
 // Note: When growing (or shrinking) a cluster from an odd number of acceptors
 // to an even number of acceptors, the implemented process is required. But when
@@ -68,7 +72,7 @@ func GrowCluster(ctx context.Context, target Acceptor, proposers ...Proposer) er
 		identity = func(x []byte) []byte { return x }
 		proposer = proposers[rand.Intn(len(proposers))]
 	)
-	if _, err := proposer.Propose(ctx, identity); err != nil {
+	if _, err := proposer.Propose(ctx, zerokey, identity); err != nil {
 		return errors.Wrap(err, "during grow step 2 (identity read)")
 	}
 
@@ -113,7 +117,7 @@ func ShrinkCluster(ctx context.Context, target Acceptor, proposers ...Proposer) 
 		identity = func(x []byte) []byte { return x }
 		proposer = proposers[rand.Intn(len(proposers))]
 	)
-	if _, err := proposer.Propose(ctx, identity); err != nil {
+	if _, err := proposer.Propose(ctx, zerokey, identity); err != nil {
 		return errors.Wrap(err, "during shrink step 2 (identity read)")
 	}
 
