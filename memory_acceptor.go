@@ -13,6 +13,8 @@ type MemoryAcceptor struct {
 	values map[string]acceptedValue
 }
 
+// An accepted value is associated with a key in an acceptor.
+// In this way, one acceptor can manage many key-value pairs.
 type acceptedValue struct {
 	promise  Ballot
 	accepted Ballot
