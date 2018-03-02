@@ -26,7 +26,7 @@ func (a *MemoryAcceptor) Address() string {
 	return a.addr
 }
 
-// Prepare implements the first-phase responsibilties of an acceptor.
+// Prepare implements the first-phase responsibilities of an acceptor.
 func (a *MemoryAcceptor) Prepare(ctx context.Context, b Ballot) (value []byte, current Ballot, err error) {
 	a.mtx.Lock()
 	defer a.mtx.Unlock()
@@ -82,7 +82,7 @@ func (a *MemoryAcceptor) Accept(ctx context.Context, b Ballot, value []byte) err
 		return ConflictError{Proposed: b, Existing: a.ballot}
 	}
 
-	// If everthing is satisfied, from the paper: "Erase the promise, mark the
+	// If everything is satisfied, from the paper: "Erase the promise, mark the
 	// received tuple as the accepted value."
 	a.promise, a.ballot, a.value = Ballot{}, b, value
 
