@@ -76,7 +76,7 @@ func (a *MemoryAcceptor) Prepare(ctx context.Context, key string, b Ballot) (val
 	return av.value, av.accepted, nil
 }
 
-// Accept models the second-phase responsibilities of an acceptor.
+// Accept implements the second-phase responsibilities of an acceptor.
 func (a *MemoryAcceptor) Accept(ctx context.Context, key string, b Ballot, value []byte) error {
 	a.mtx.Lock()
 	defer a.mtx.Unlock()
