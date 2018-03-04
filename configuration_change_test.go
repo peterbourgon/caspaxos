@@ -11,9 +11,9 @@ func TestConfigurationChange(t *testing.T) {
 	// Build the cluster.
 	var (
 		logger = log.NewLogfmtLogger(testWriter{t})
-		a1     = NewMemoryAcceptor("1")
-		a2     = NewMemoryAcceptor("2")
-		a3     = NewMemoryAcceptor("3")
+		a1     = NewMemoryAcceptor("1", log.With(logger, "a", 1))
+		a2     = NewMemoryAcceptor("2", log.With(logger, "a", 2))
+		a3     = NewMemoryAcceptor("3", log.With(logger, "a", 3))
 		p1     = NewLocalProposer(1, log.With(logger, "p", 1), a1, a2, a3)
 		p2     = NewLocalProposer(2, log.With(logger, "p", 2), a1, a2, a3)
 		p3     = NewLocalProposer(3, log.With(logger, "p", 3), a1, a2, a3)
@@ -58,13 +58,13 @@ func TestConfigurationChange(t *testing.T) {
 
 	// Add a new acceptor. After one or more reads,
 	// it should have the correct value.
-	a4 := NewMemoryAcceptor("4")
+	a4 := NewMemoryAcceptor("4", log.With(logger, "a", 4))
 	growClusterWith(a4)
 	verifyReads()
 	verifyValue(a4)
 
 	// Add another acceptor, same deal.
-	a5 := NewMemoryAcceptor("5")
+	a5 := NewMemoryAcceptor("5", log.With(logger, "a", 5))
 	growClusterWith(a5)
 	verifyReads()
 	verifyValue(a5)

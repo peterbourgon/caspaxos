@@ -15,9 +15,9 @@ func TestInitializeOnlyOnce(t *testing.T) {
 	// Build the cluster.
 	var (
 		logger = log.NewLogfmtLogger(testWriter{t})
-		a1     = NewMemoryAcceptor("1")
-		a2     = NewMemoryAcceptor("2")
-		a3     = NewMemoryAcceptor("3")
+		a1     = NewMemoryAcceptor("1", log.With(logger, "a", 1))
+		a2     = NewMemoryAcceptor("2", log.With(logger, "a", 2))
+		a3     = NewMemoryAcceptor("3", log.With(logger, "a", 3))
 		p1     = NewLocalProposer(1, log.With(logger, "p", 1), a1, a2, a3)
 		p2     = NewLocalProposer(2, log.With(logger, "p", 2), a1, a2, a3)
 		p3     = NewLocalProposer(3, log.With(logger, "p", 3), a1, a2, a3)
@@ -79,9 +79,9 @@ func TestFastForward(t *testing.T) {
 	// Build the cluster.
 	var (
 		logger = log.NewLogfmtLogger(testWriter{t})
-		a1     = NewMemoryAcceptor("1")
-		a2     = NewMemoryAcceptor("2")
-		a3     = NewMemoryAcceptor("3")
+		a1     = NewMemoryAcceptor("1", log.With(logger, "a", 1))
+		a2     = NewMemoryAcceptor("2", log.With(logger, "a", 2))
+		a3     = NewMemoryAcceptor("3", log.With(logger, "a", 3))
 		p1     = NewLocalProposer(1, log.With(logger, "p", 1), a1, a2, a3)
 		p2     = NewLocalProposer(2, log.With(logger, "p", 2), a1, a2, a3)
 		p3     = NewLocalProposer(3, log.With(logger, "p", 3), a1, a2, a3)
@@ -110,9 +110,9 @@ func TestMultiKeyReads(t *testing.T) {
 	// Build the cluster.
 	var (
 		logger = log.NewLogfmtLogger(testWriter{t})
-		a1     = NewMemoryAcceptor("1")
-		a2     = NewMemoryAcceptor("2")
-		a3     = NewMemoryAcceptor("3")
+		a1     = NewMemoryAcceptor("1", log.With(logger, "a", 1))
+		a2     = NewMemoryAcceptor("2", log.With(logger, "a", 2))
+		a3     = NewMemoryAcceptor("3", log.With(logger, "a", 3))
 		p1     = NewLocalProposer(1, log.With(logger, "p", 1), a1, a2, a3)
 		p2     = NewLocalProposer(2, log.With(logger, "p", 2), a1, a2, a3)
 		p3     = NewLocalProposer(3, log.With(logger, "p", 3), a1, a2, a3)
@@ -142,9 +142,9 @@ func TestConcurrentCASWrites(t *testing.T) {
 	// Build the cluster.
 	var (
 		logger = log.NewLogfmtLogger(testWriter{t})
-		a1     = NewMemoryAcceptor("1")
-		a2     = NewMemoryAcceptor("2")
-		a3     = NewMemoryAcceptor("3")
+		a1     = NewMemoryAcceptor("1", log.With(logger, "a", 1))
+		a2     = NewMemoryAcceptor("2", log.With(logger, "a", 2))
+		a3     = NewMemoryAcceptor("3", log.With(logger, "a", 3))
 		p1     = NewLocalProposer(1, log.With(logger, "p", 1), a1, a2, a3)
 		p2     = NewLocalProposer(2, log.With(logger, "p", 2), a1, a2, a3)
 		p3     = NewLocalProposer(3, log.With(logger, "p", 3), a1, a2, a3)
@@ -187,18 +187,18 @@ func TestConcurrentCASWrites(t *testing.T) {
 	// Each proposal will go to a random proposer, to keep us honest.
 	worker := func(key string, values [][]byte) {
 		var prev []byte // initially no value is set
-		for i, value := range values {
+		for i, next := range values {
 			var (
 				p = randomProposer()
-				f = cas(prev, value)
+				f = cas(prev, next)
 			)
 			have, err := p.Propose(ctx, key, f)
 			if err != nil {
-				t.Errorf("%s worker: step %d (%s -> %s): %v", key, i+1, prettyPrint(prev), value, err)
+				t.Errorf("%s worker: step %d (%s -> %s): %v", key, i+1, prettyPrint(prev), prettyPrint(next), err)
 				return
 			}
-			if want, have := string(value), string(have); want != have {
-				t.Errorf("%s worker: step %d (%s -> %s): want %s, have %s", key, i+1, prettyPrint(prev), value, want, have)
+			if want, have := string(next), string(have); want != have {
+				t.Errorf("%s worker: step %d (%s -> %s): want %s, have %s", key, i+1, prettyPrint(prev), prettyPrint(next), want, have)
 				return
 			}
 			prev = have
@@ -227,4 +227,13 @@ func TestConcurrentCASWrites(t *testing.T) {
 			t.Errorf("%s: final state: want %s, have %s", key, want, have)
 		}
 	}
+}
+
+type prettyPrint []byte
+
+func (pp prettyPrint) String() string {
+	if pp == nil {
+		return "Ø"
+	}
+	return string(pp)
 }

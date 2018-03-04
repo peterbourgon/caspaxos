@@ -4,6 +4,9 @@ import (
 	"context"
 	"fmt"
 	"sync"
+
+	"github.com/go-kit/kit/log"
+	"github.com/go-kit/kit/log/level"
 )
 
 // MemoryAcceptor persists data in-memory.
@@ -11,6 +14,7 @@ type MemoryAcceptor struct {
 	mtx    sync.Mutex
 	addr   string
 	values map[string]acceptedValue
+	logger log.Logger
 }
 
 // An accepted value is associated with a key in an acceptor.
@@ -26,10 +30,11 @@ var zeroballot Ballot
 
 // NewMemoryAcceptor returns a usable in-memory acceptor.
 // Useful primarily for testing.
-func NewMemoryAcceptor(addr string) *MemoryAcceptor {
+func NewMemoryAcceptor(addr string, logger log.Logger) *MemoryAcceptor {
 	return &MemoryAcceptor{
 		addr:   addr,
 		values: map[string]acceptedValue{},
+		logger: logger,
 	}
 }
 
@@ -40,6 +45,13 @@ func (a *MemoryAcceptor) Address() string {
 
 // Prepare implements the first-phase responsibilities of an acceptor.
 func (a *MemoryAcceptor) Prepare(ctx context.Context, key string, b Ballot) (value []byte, current Ballot, err error) {
+	defer func() {
+		level.Debug(a.logger).Log(
+			"method", "Prepare", "key", key, "B", b,
+			"success", err == nil, "return_ballot", current, "err", err,
+		)
+	}()
+
 	a.mtx.Lock()
 	defer a.mtx.Unlock()
 
@@ -79,7 +91,14 @@ func (a *MemoryAcceptor) Prepare(ctx context.Context, key string, b Ballot) (val
 }
 
 // Accept implements the second-phase responsibilities of an acceptor.
-func (a *MemoryAcceptor) Accept(ctx context.Context, key string, b Ballot, value []byte) error {
+func (a *MemoryAcceptor) Accept(ctx context.Context, key string, b Ballot, value []byte) (err error) {
+	defer func() {
+		level.Debug(a.logger).Log(
+			"method", "Accept", "key", key, "B", b,
+			"success", err == nil, "err", err,
+		)
+	}()
+
 	a.mtx.Lock()
 	defer a.mtx.Unlock()
 
