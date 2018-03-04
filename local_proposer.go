@@ -104,7 +104,7 @@ func (p *LocalProposer) propose(ctx context.Context, key string, f ChangeFunc) (
 	b := p.ballot.inc()
 
 	// Set up a logger, for debugging.
-	logger := level.Debug(log.With(p.logger, "method", "Propose", "B", b))
+	logger := level.Debug(log.With(p.logger, "method", "Propose", "key", key, "B", b))
 
 	// If prepare is successful, we'll have an accepted current state.
 	var currentState []byte
@@ -162,7 +162,7 @@ func (p *LocalProposer) propose(ctx context.Context, key string, f ChangeFunc) (
 				// and the preparer has accepted it as a promise; the largest
 				// confirmed ballot number is used to select which returned
 				// value will be chosen as the current value.
-				logger.Log("addr", result.addr, "result", "confirm", "ballot", result.ballot, "value", prettyPrint(result.value))
+				logger.Log("addr", result.addr, "result", "confirm", "ballot", result.ballot)
 				if result.ballot.greaterThan(biggestConfirm) {
 					biggestConfirm, currentState = result.ballot, result.value
 				}
@@ -182,7 +182,7 @@ func (p *LocalProposer) propose(ctx context.Context, key string, f ChangeFunc) (
 			return nil, ErrPrepareFailed
 		}
 
-		logger.Log("result", "success", "current_state", prettyPrint(currentState))
+		logger.Log("result", "success")
 	}
 
 	// We've successfully completed the prepare phase. From the paper: "The
@@ -195,7 +195,6 @@ func (p *LocalProposer) propose(ctx context.Context, key string, f ChangeFunc) (
 	{
 		// Set up a sub-logger for this phase.
 		logger := log.With(logger, "phase", "accept")
-		logger.Log("current_state", prettyPrint(currentState), "new_state", prettyPrint(newState))
 
 		// We collect accept results into this channel.
 		type result struct {
@@ -234,7 +233,7 @@ func (p *LocalProposer) propose(ctx context.Context, key string, f ChangeFunc) (
 		}
 
 		// Log the success.
-		logger.Log("result", "success", "new_state", prettyPrint(newState))
+		logger.Log("result", "success")
 	}
 
 	// Return the new state to the caller.
@@ -291,13 +290,4 @@ func (p *LocalProposer) RemoveAccepter(target Acceptor) error {
 	}
 	delete(p.accepters, target.Address())
 	return nil
-}
-
-type prettyPrint []byte
-
-func (pp prettyPrint) String() string {
-	if []byte(pp) == nil {
-		return "Ø"
-	}
-	return string(pp)
 }

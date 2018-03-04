@@ -1,7 +1,6 @@
 package caspaxos
 
 import (
-	"fmt"
 	"testing"
 )
 
@@ -14,7 +13,7 @@ func TestZeroBallotAlwaysLoses(t *testing.T) {
 		{Counter: 2, ID: 1},
 		{Counter: 2, ID: 2},
 	} {
-		t.Run(fmt.Sprintf("%+v", input), func(t *testing.T) {
+		t.Run(input.String(), func(t *testing.T) {
 			var zero Ballot
 			if zero.greaterThan(input) {
 				t.Fatal("this ballot isn't greater than the zero ballot")
