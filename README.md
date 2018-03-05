@@ -85,7 +85,7 @@ type myProposer struct {
     accepters []Accepter
 }
 
-func (p Proposer) Propose(f ChangeFunc) (new State, err error) { /* ... */ }
+func (p myProposer) Propose(f ChangeFunc) (new State, err error) { /* ... */ }
 
 type myAcceptor struct {
     promise  Ballot // sometimes empty
