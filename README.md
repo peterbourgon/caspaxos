@@ -6,11 +6,11 @@ This repo provides a Go implementation of the CASPaxos consensus protocol,
 including (eventually, soon) a batteries-included, deployable system
 with configurable transports and persistence layers.
 
-# Protocol implementation guide
+## Protocol implementation guide
 
 This section has some notes regarding an implementation of the core protocol.
 
-## Node types
+### Node types
 
 The paper describes three node types: clients, proposers, and acceptors. Clients
 are the users interacting with your system, so we only have to worry about
@@ -104,25 +104,25 @@ to Redis, for example. We'll deal with that in a bit.
 
 [gryadka]: https://github.com/gryadka/js
 
-## Proposal algorithm
+### Proposal algorithm
 
 Now let's talk about what needs to happen in Propose, Prepare, and Accept.
 
 TODO
 
-## Configuration changes
+### Configuration changes
 
 TODO
 
-## Deletes
+### Deletes
 
 TODO
 
-## Optimizations
+### Optimizations
 
 TODO
 
-# Cluster implementation guide
+## Cluster implementation guide
 
 Production systems live and die on the basis of their operability. In the ideal
 case, bootstrapping a CASPaxos system should involve nothing more than starting
