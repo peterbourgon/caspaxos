@@ -1,10 +1,13 @@
 # CASPaxos [![GoDoc](https://godoc.org/github.com/peterbourgon/caspaxos?status.svg)](https://godoc.org/github.com/peterbourgon/caspaxos) [![Travis CI](https://travis-ci.org/peterbourgon/caspaxos.svg?branch=master)](https://travis-ci.org/peterbourgon/caspaxos) [![Go Report Card](https://goreportcard.com/badge/peterbourgon/caspaxos)](https://goreportcard.com/report/peterbourgon/caspaxos)
 
-- [CASPaxos: Replicated State Machines without logs](https://github.com/rystsov/caspaxos/blob/master/latex/caspaxos.pdf)
 
 This repo provides a Go implementation of the CASPaxos consensus protocol,
 including (eventually, soon) a batteries-included, deployable system
 with configurable transports and persistence layers.
+
+- [CASPaxos: Replicated State Machines without logs](https://github.com/rystsov/caspaxos/blob/master/latex/caspaxos.pdf) (PDF)
+- [Protocol implementation guide](#protocol-implementation-guide)
+- [System implementation guide](#system-implementation-guide)
 
 ## Protocol implementation guide
 
@@ -122,7 +125,7 @@ TODO
 
 TODO
 
-## Cluster implementation guide
+## System implementation guide
 
 Production systems live and die on the basis of their operability. In the ideal
 case, bootstrapping a CASPaxos system should involve nothing more than starting
@@ -139,3 +142,9 @@ All of these properties should be possible to achieve if we consider the
 strongly-consistent CASPaxos protocol as the data plane, and combine it with
 with an eventually-consistent gossip membership layer as the control plane. In
 this section, we'll sketch out what such a system would look like.
+
+This is an opinionated approach. Other, radically different approaches are also
+viable. As always, carefully consider your operational requirements to determine
+which approach is best for your use-case.
+
+TODO
