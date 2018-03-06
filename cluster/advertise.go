@@ -11,16 +11,16 @@ import (
 	"github.com/pkg/errors"
 )
 
-// Resolver models net.DefaultResolver.
-type Resolver interface {
+// resolver models net.DefaultResolver.
+type resolver interface {
 	LookupIPAddr(ctx context.Context, address string) ([]net.IPAddr, error)
 }
 
-// CalculateAdvertiseIP deduces the best IP on which to advertise our API
+// calculateAdvertiseIP deduces the best IP on which to advertise our API
 // based on a user-provided bind host and advertise host. This code lifts
 // some logic out of the memberlist internals, and augments it with extra
 // logic to resolve hostnames. (Memberlist demands pure IPs.)
-func CalculateAdvertiseIP(bindHost, advertiseHost string, resolver Resolver, logger log.Logger) (net.IP, error) {
+func calculateAdvertiseIP(bindHost, advertiseHost string, r resolver, logger log.Logger) (net.IP, error) {
 	// Prefer advertise host, if it's given.
 	if advertiseHost != "" {
 		// Best case: parse a plain IP.
@@ -32,7 +32,7 @@ func CalculateAdvertiseIP(bindHost, advertiseHost string, resolver Resolver, log
 		}
 
 		// Otherwise, try to resolve it as if it's a hostname.
-		ips, err := resolver.LookupIPAddr(context.Background(), advertiseHost)
+		ips, err := r.LookupIPAddr(context.Background(), advertiseHost)
 		if err == nil && len(ips) == 1 {
 			if ip4 := ips[0].IP.To4(); ip4 != nil {
 				ips[0].IP = ip4
@@ -69,7 +69,7 @@ func CalculateAdvertiseIP(bindHost, advertiseHost string, resolver Resolver, log
 	}
 
 	// And finally, try to resolve the bind host.
-	ips, err := resolver.LookupIPAddr(context.Background(), bindHost)
+	ips, err := r.LookupIPAddr(context.Background(), bindHost)
 	if err == nil && len(ips) == 1 {
 		if ip4 := ips[0].IP.To4(); ip4 != nil {
 			ips[0].IP = ip4

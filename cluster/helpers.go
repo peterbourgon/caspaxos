@@ -11,8 +11,8 @@ import (
 	"github.com/pkg/errors"
 )
 
-// HostPorts are deduced via CalculateHostPorts.
-type HostPorts struct {
+// CalculatedHostPorts are deduced via CalculateHostPorts.
+type CalculatedHostPorts struct {
 	BindHost      string
 	BindPort      int
 	AdvertiseHost string
@@ -23,23 +23,23 @@ type HostPorts struct {
 // and explicit advertise address (optional), along with a default port for
 // cluster communications (required) and a set of cluster peer host:ports
 // (optional), and deduce the best concrete hosts and ports to bind to and
-// advertise within the cluster, suitable for passing to memberlist. We also
-// figures out some notices and warnings along the way, and log them to the
-// passed logger.
-func CalculateHostPorts(bindAddr, advertiseAddr string, defaultClusterPort int, clusterPeers []string, logger log.Logger) (res HostPorts, err error) {
-	_, _, res.BindHost, res.BindPort, err = ParseAddr(bindAddr, defaultClusterPort)
+// advertise within the cluster, suitable for passing to NewPeer. We also figure
+// out some notices and warnings along the way, and log them to the passed
+// logger.
+func CalculateHostPorts(bindAddr, advertiseAddr string, defaultClusterPort int, clusterPeers []string, logger log.Logger) (res CalculatedHostPorts, err error) {
+	_, _, res.BindHost, res.BindPort, err = parseAddr(bindAddr, defaultClusterPort)
 	if err != nil {
 		return res, errors.Wrapf(err, "couldn't parse bind address %s", bindAddr)
 	}
 
 	if advertiseAddr != "" {
-		_, _, res.AdvertiseHost, res.AdvertisePort, err = ParseAddr(advertiseAddr, defaultClusterPort)
+		_, _, res.AdvertiseHost, res.AdvertisePort, err = parseAddr(advertiseAddr, defaultClusterPort)
 		if err != nil {
 			return res, errors.Wrapf(err, "couldn't parse advertise address %s", advertiseAddr)
 		}
 	}
 
-	advertiseIP, err := CalculateAdvertiseIP(res.BindHost, res.AdvertiseHost, net.DefaultResolver, logger)
+	advertiseIP, err := calculateAdvertiseIP(res.BindHost, res.AdvertiseHost, net.DefaultResolver, logger)
 	if err != nil {
 		return res, errors.Wrap(err, "couldn't deduce an advertise IP")
 	}
@@ -63,14 +63,14 @@ func CalculateHostPorts(bindAddr, advertiseAddr string, defaultClusterPort int, 
 	return res, nil
 }
 
-// ParseAddr liberally accepts a wide variety of addr formats, along with a
+// parseAddr liberally accepts a wide variety of addr formats, along with a
 // default port, and returns a well-defined network, address, host, and port.
 //
 //     "udp://host:1234", 80 => udp, host:1234, host, 1234
 //     "host:1234", 80       => tcp, host:1234, host, 1234
 //     "host", 80            => tcp, host:80,   host, 80
 //
-func ParseAddr(addr string, defaultPort int) (network, address, host string, port int, err error) {
+func parseAddr(addr string, defaultPort int) (network, address, host string, port int, err error) {
 	u, err := url.Parse(strings.ToLower(addr))
 	if err != nil {
 		return network, address, host, port, err

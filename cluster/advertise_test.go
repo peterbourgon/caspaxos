@@ -49,7 +49,7 @@ func TestCalculateAdvertiseAddr(t *testing.T) {
 		},
 	} {
 		t.Run(testcase.name, func(t *testing.T) {
-			ip, err := CalculateAdvertiseIP(testcase.bindAddr, testcase.advertiseAddr, r, log.NewNopLogger())
+			ip, err := calculateAdvertiseIP(testcase.bindAddr, testcase.advertiseAddr, r, log.NewNopLogger())
 			if err != nil {
 				t.Fatal(err)
 			}
