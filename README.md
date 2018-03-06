@@ -320,7 +320,7 @@ success.
              continue // conflict
          }
          quorum-- // confirmation
-         if result.state != nil && result.ballot.greaterThan(highest) {
+         if result.ballot.greaterThan(highest) {
              winning = result.state
              highest = result.ballot
          }
