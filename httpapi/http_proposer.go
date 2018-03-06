@@ -132,7 +132,7 @@ func (ps ProposerServer) handleGet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	returnedValue, err := ps.proposer.Propose(r.Context(), key, read)
+	returnedValue, _, err := ps.proposer.Propose(r.Context(), key, read)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, errors.Wrap(err, "Propose failed"))
 		return
@@ -194,7 +194,7 @@ func (ps ProposerServer) handlePost(w http.ResponseWriter, r *http.Request) {
 	}
 	value = []byte(s)
 
-	returnedValue, err := ps.proposer.Propose(r.Context(), key, cas(version, value))
+	returnedValue, _, err := ps.proposer.Propose(r.Context(), key, cas(version, value))
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, errors.Wrap(err, "Propose failed"))
 		return
