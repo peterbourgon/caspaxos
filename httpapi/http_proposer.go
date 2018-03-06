@@ -14,7 +14,7 @@ import (
 	"github.com/gorilla/mux"
 	"github.com/pkg/errors"
 
-	"github.com/peterbourgon/caspaxos"
+	"github.com/peterbourgon/caspaxos/protocol"
 )
 
 // versionValue is used for CAS writes. We use encoding.BinaryMarshaler to get
@@ -45,7 +45,7 @@ func read(x []byte) []byte { return x }
 
 // From the paper: "To update a register to val_1 if the current version is 5,
 // [we can use] x -> if x = (5,*) then (6,val_1) else x."
-func cas(version uint64, value []byte) caspaxos.ChangeFunc {
+func cas(version uint64, value []byte) protocol.ChangeFunc {
 	return func(x []byte) (res []byte) {
 		var vv versionValue
 		if x != nil {
@@ -69,7 +69,7 @@ func cas(version uint64, value []byte) caspaxos.ChangeFunc {
 	}
 }
 
-// ProposerServer wraps a caspaxos.Proposer and provides a basic HTTP API.
+// ProposerServer wraps a protocol.Proposer and provides a basic HTTP API.
 // Note that this is an artificially restricted API. The protocol itself
 // is much more expressive, this is mostly meant as a tech demo.
 //
@@ -89,13 +89,13 @@ func cas(version uint64, value []byte) caspaxos.ChangeFunc {
 //
 type ProposerServer struct {
 	http.Handler
-	proposer caspaxos.Proposer
+	proposer protocol.Proposer
 	logger   log.Logger
 }
 
 // NewProposerServer returns an ProposerServer wrapping the provided proposer.
 // The ProposerServer is an http.Handler and can ServeHTTP.
-func NewProposerServer(proposer caspaxos.Proposer, logger log.Logger) ProposerServer {
+func NewProposerServer(proposer protocol.Proposer, logger log.Logger) ProposerServer {
 	ps := ProposerServer{
 		proposer: proposer,
 		logger:   logger,
