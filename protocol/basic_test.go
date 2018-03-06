@@ -1,4 +1,4 @@
-package caspaxos
+package protocol
 
 import (
 	"bytes"
@@ -229,6 +229,19 @@ func TestConcurrentCASWrites(t *testing.T) {
 	}
 }
 
+func changeFuncInitializeOnlyOnce(s string) ChangeFunc {
+	return func(x []byte) []byte {
+		if x == nil {
+			return []byte(s)
+		}
+		return x
+	}
+}
+
+func changeFuncRead(x []byte) []byte {
+	return x
+}
+
 type prettyPrint []byte
 
 func (pp prettyPrint) String() string {
@@ -236,4 +249,11 @@ func (pp prettyPrint) String() string {
 		return "Ø"
 	}
 	return string(pp)
+}
+
+type testWriter struct{ t *testing.T }
+
+func (tw testWriter) Write(p []byte) (int, error) {
+	tw.t.Logf("%s", string(p))
+	return len(p), nil
 }

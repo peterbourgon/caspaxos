@@ -1,4 +1,4 @@
-package caspaxos
+package protocol
 
 import "fmt"
 
