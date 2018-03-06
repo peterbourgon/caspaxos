@@ -26,9 +26,9 @@ var (
 	ErrNotFound = errors.New("not found")
 )
 
-// LocalProposer performs the initialization by communicating with acceptors,
-// and keep minimal state needed to generate unique increasing update IDs
-// (ballot numbers).
+// LocalProposer (from the paper) "performs the initialization by communicating
+// with acceptors, and keep minimal state needed to generate unique increasing
+// update IDs (ballot numbers)."
 type LocalProposer struct {
 	mtx       sync.Mutex
 	ballot    Ballot

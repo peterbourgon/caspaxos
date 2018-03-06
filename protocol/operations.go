@@ -110,8 +110,8 @@ func GrowCluster(ctx context.Context, target Acceptor, proposers []Proposer) err
 	// From the paper: "Pick any proposer and execute the identity state
 	// transaction x -> x."
 	var (
-		identity = func(x []byte) []byte { return x }
 		proposer = proposers[rand.Intn(len(proposers))]
+		identity = func(x []byte) []byte { return x }
 	)
 	if _, _, err := proposer.Propose(ctx, zerokey, identity); err != nil {
 		return errors.Wrap(err, "during grow step 2 (identity read)")
@@ -175,12 +175,6 @@ func ShrinkCluster(ctx context.Context, target Acceptor, proposers []Proposer) e
 	return nil
 }
 
-// ErrStateUpdated indicates a key was re-written to a nonempty value before the
-// garbage collection process could completely remove it. The new value has
-// "won" and the client should take some corrective action, likely re-issuing a
-// delete.
-var ErrStateUpdated = errors.New("state updated before garbage collection could complete")
-
 // GarbageCollect removes an empty key as described in section 3.1 "How to
 // delete a record" in the paper. It will continue until the key is successfully
 // garbage collected, or the context is canceled.
@@ -204,7 +198,7 @@ func GarbageCollect(ctx context.Context, key string, delay time.Duration, propos
 			}
 		}
 
-		// From the paper: "(b) For each proposer, fast-forwards its counter to
+		// From the paper: "(b) For each proposer, fast-forward its counter to
 		// generate ballot numbers greater than the tombstone's number."
 		if err := gcFastForward(ctx, tombstone, proposers); err != nil {
 			return err
@@ -252,7 +246,7 @@ func gcBroadcastIdentity(ctx context.Context, key string, proposers []Proposer) 
 			return 0, result.err
 		}
 		if len(result.state) != 0 {
-			return 0, ErrStateUpdated
+			return 0, ErrNotEmpty
 		}
 		if result.ballot.Counter > tombstone {
 			tombstone = result.ballot.Counter

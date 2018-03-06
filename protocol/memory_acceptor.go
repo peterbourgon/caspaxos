@@ -10,7 +10,9 @@ import (
 	"github.com/go-kit/kit/log/level"
 )
 
-// ErrNotEmpty is returned when a delete request comes for a non-empty key.
+// ErrNotEmpty is returned when a delete request comes for a non-empty key,
+// or when an identity read is performed as part of garbage collection and
+// a non-empty state is returned.
 var ErrNotEmpty = errors.New("not empty")
 
 // MemoryAcceptor persists data in-memory.
