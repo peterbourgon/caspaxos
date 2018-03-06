@@ -9,7 +9,7 @@ with configurable transports and persistence layers.
 **DISCLAIMER**: this is a **work in progress** and is **incomplete**.
 This disclaimer will be removed when the repo is more usable.
 
-—
+---
 
 1. [Building and running](#building-and-running)
 1. [Protocol implementation notes](#protocol-implementation-notes)
