@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"strings"
 
 	"github.com/go-kit/kit/log"
 	"github.com/go-kit/kit/log/level"
@@ -82,4 +83,30 @@ func calculateAdvertiseIP(bindHost, advertiseHost string, r resolver, logger log
 		err = fmt.Errorf("bind host '%s' resolved to %d IPs", bindHost, len(ips))
 	}
 	return nil, errors.Wrap(err, "bind host failed to resolve")
+}
+
+func hasNonlocal(hostports []string) bool {
+	for _, hostport := range hostports {
+		if host, _, err := net.SplitHostPort(hostport); err == nil {
+			hostport = host
+		}
+		if ip := net.ParseIP(hostport); ip != nil && !ip.IsLoopback() {
+			return true
+		} else if ip == nil && strings.ToLower(hostport) != "localhost" {
+			return true
+		}
+	}
+	return false
+}
+
+func isUnroutable(addr string) bool {
+	if host, _, err := net.SplitHostPort(addr); err == nil {
+		addr = host
+	}
+	if ip := net.ParseIP(addr); ip != nil && (ip.IsUnspecified() || ip.IsLoopback()) {
+		return true // typically 0.0.0.0 or localhost
+	} else if ip == nil && strings.ToLower(addr) == "localhost" {
+		return true
+	}
+	return false
 }

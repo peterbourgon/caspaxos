@@ -2,7 +2,6 @@ package cluster
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io/ioutil"
 	"net"
@@ -15,6 +14,7 @@ import (
 	"github.com/go-kit/kit/log/level"
 	"github.com/hashicorp/memberlist"
 	"github.com/pborman/uuid"
+	"github.com/pkg/errors"
 )
 
 // PeerConfig describes how to start up a peer in the cluster.
@@ -29,7 +29,7 @@ type PeerConfig struct {
 	// IP address, not including port.
 	//
 	// Required.
-	BindAddr string
+	BindHost string
 
 	// The port we bind the listener for cluster communications.
 	//
@@ -42,7 +42,7 @@ type PeerConfig struct {
 	//
 	// Optional. If not provided, we'll deduce something based on the bind
 	// address.
-	AdvertiseAddr string
+	AdvertiseHost string
 
 	// The port we advertise into the cluster, which we claim we can be reached
 	// on for cluster communications.
@@ -56,7 +56,7 @@ type PeerConfig struct {
 	// and returned by queries.
 	//
 	// Optional. If not provided, we'll take the cluster advertise address.
-	APIAddr string
+	APIHost string
 
 	// It's assumed that all cluster peers run some kind of API which other
 	// peers want to talk to. This is the port that we claim that API can be
@@ -84,7 +84,7 @@ type PeerConfig struct {
 	// logger, including notification of several conditions that will prevent
 	// the cluster from working as expected.
 	//
-	// Optional, but recommended.
+	// Optional (but recommended).
 	Logger log.Logger
 }
 
@@ -102,11 +102,20 @@ func NewPeer(config PeerConfig) (*Peer, error) {
 	if config.PeerType == "" {
 		return nil, errors.New("must provide PeerType")
 	}
-	if config.BindAddr == "" {
-		return nil, errors.New("must provide BindAddr")
+	if config.BindHost == "" {
+		return nil, errors.New("must provide BindHost")
 	}
 	if config.BindPort == 0 {
 		return nil, errors.New("must provide BindPort")
+	}
+	if config.AdvertiseHost == "" {
+		// leave it blank, as we force it to an IP later
+	}
+	if config.AdvertisePort == 0 {
+		config.AdvertisePort = config.BindPort
+	}
+	if config.APIHost == "" {
+		// leave it blank, take AdvertiseHost (forced advertiseIP) later
 	}
 	if config.APIPort == 0 {
 		return nil, errors.New("must provide APIPort")
@@ -115,16 +124,35 @@ func NewPeer(config PeerConfig) (*Peer, error) {
 		config.Logger = log.NewNopLogger()
 	}
 
+	// It's best if AdvertiseHost is an IP.
+	advertiseIP, err := calculateAdvertiseIP(config.BindHost, config.AdvertiseHost, net.DefaultResolver, config.Logger)
+	if err != nil {
+		return nil, errors.Wrap(err, "couldn't deduce an advertise IP")
+	}
+	if hasNonlocal(config.InitialPeers) && isUnroutable(advertiseIP.String()) {
+		level.Warn(config.Logger).Log("err", "this node advertises itself on an unroutable IP", "ip", advertiseIP.String())
+		level.Warn(config.Logger).Log("err", "this node will be unreachable in the cluster")
+		level.Warn(config.Logger).Log("err", "provide an explicit advertise address as a routable IP address or hostname")
+	}
+
+	// Take the advertise IP.
+	config.AdvertiseHost = advertiseIP.String()
+
+	// And set the APIHost default, if necessary.
+	if config.APIHost == "" {
+		config.APIHost = config.AdvertiseHost
+	}
+
 	// Create a memberlist delegate.
 	d := newDelegate(config.Callback, config.Logger)
 	mlconfig := memberlist.DefaultLANConfig()
 	{
 		mlconfig.Name = uuid.New()
-		mlconfig.BindAddr = config.BindAddr
+		mlconfig.BindAddr = config.BindHost
 		mlconfig.BindPort = config.BindPort
-		if config.AdvertiseAddr != "" {
-			level.Debug(config.Logger).Log("advertise_addr", config.AdvertiseAddr, "advertise_port", config.AdvertisePort)
-			mlconfig.AdvertiseAddr = config.AdvertiseAddr
+		if config.AdvertiseHost != "" {
+			level.Debug(config.Logger).Log("advertise_host", config.AdvertiseHost, "advertise_port", config.AdvertisePort)
+			mlconfig.AdvertiseAddr = config.AdvertiseHost
 			mlconfig.AdvertisePort = config.AdvertisePort
 		}
 		mlconfig.LogOutput = ioutil.Discard
@@ -136,7 +164,7 @@ func NewPeer(config PeerConfig) (*Peer, error) {
 		return nil, err
 	}
 
-	// Bootstrap the delegate.
+	// Initialize the delegate and join up with the memberlist.
 	d.init(mlconfig.Name, config.PeerType, ml.LocalNode().Addr.String(), config.APIPort, ml.NumMembers)
 	n, _ := ml.Join(config.InitialPeers)
 	level.Debug(config.Logger).Log("Join", n)

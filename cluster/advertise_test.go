@@ -60,6 +60,60 @@ func TestCalculateAdvertiseAddr(t *testing.T) {
 	}
 }
 
+func TestHasNonlocal(t *testing.T) {
+	for _, testcase := range []struct {
+		name      string
+		hostports []string
+		want      bool
+	}{
+		{"empty",
+			[]string{}, false,
+		},
+		{"localhost only",
+			[]string{"localhost"}, false,
+		},
+		{"127 only",
+			[]string{"127.0.0.1", "127.1.2.3"}, false,
+		},
+		{"10s",
+			[]string{"10.0.0.1", "10.0.0.2", "10.0.0.3"}, true,
+		},
+		{"hostnames",
+			[]string{"foo.example.com", "bar.example.com"}, true,
+		},
+		{"mix",
+			[]string{"localhost", "foo", "127.0.0.1"}, true,
+		},
+	} {
+		t.Run(testcase.name, func(t *testing.T) {
+			if want, have := testcase.want, hasNonlocal(testcase.hostports); want != have {
+				t.Fatalf("%v: want %v, have %v", testcase.hostports, want, have)
+			}
+		})
+	}
+}
+
+func TestIsUnroutable(t *testing.T) {
+	for addr, want := range map[string]bool{
+		"127.0.0.1":       true,
+		"127.0.0.1:1234":  true,
+		"localhost":       true,
+		"0.0.0.0":         true,
+		"::1":             true,
+		"":                false,
+		"10.0.0.1":        false,
+		"192.168.1.1":     false,
+		"foo.example.com": false,
+		"foo":             false,
+	} {
+		t.Run(fmt.Sprintf("%q", addr), func(t *testing.T) {
+			if have := isUnroutable(addr); want != have {
+				t.Fatalf("want %v, have %v", want, have)
+			}
+		})
+	}
+}
+
 type mockResolver map[string][]net.IPAddr
 
 func (r mockResolver) LookupIPAddr(_ context.Context, address string) ([]net.IPAddr, error) {
