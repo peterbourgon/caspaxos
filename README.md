@@ -279,9 +279,60 @@ number" we need to track the highest ballot number.
     }
 ```
 
+We can actually elide the result.state check, because if the value isn't set
+yet, then all result.states will be nil, and the assignment makes no difference.
+
+```diff
+-         if result.state != nil && result.ballot.greaterThan(highest) {
++         if result.ballot.greaterThan(highest) {
+             winning = result.state
+             highest = result.ballot
+         }
+```
+
 When this code is done, the winning state corresponds to the highest returned
 ballot number. It may be nil, but that's fine: we can still apply our change
 function.
+
+One interesting thing that isn't explicitly mentioned at this point in the paper
+is the situation when a change is proposed through a proposer that has an old
+ballot number, and therefore receives nothing but conflicts from acceptors. This
+happens frequently: whenever a proposer successfully executes a change, all
+other proposers necessarily have too-old ballot numbers, and won't find out
+about it until they try to make a change and fail. Whenever this happens, we can
+and should fast-forward the proposer's ballot number to the highest observed
+conflicting ballot number, so that subsequent proposals have a chance at
+success.
+
+```diff
+     var (
+         quorum      = (len(p.preparers) / 2) + 1
++        conflicting Ballot // initially zero
+         highest     Ballot // initially zero
+         winning     State  // initially nil
+     )
+     for i := 0; i < cap(results) && quorum > 0; i++ {
+         result := <-results
+         if result.err != nil {
++            if result.ballot.greaterThan(conflicting) {
++                conflicting = result.ballot
++            }
+             continue // conflict
+         }
+         quorum-- // confirmation
+         if result.state != nil && result.ballot.greaterThan(highest) {
+             winning = result.state
+             highest = result.ballot
+         }
+     }
+     if quorum > 0 {
++        p.ballot.Counter = conflicting.Counter // fast-forward
+         return nil, errors.New("didn't get enough confirmations")
+     }
+```
+
+If this code succeeds, we have a valid current (winning) state, which we can
+feed to our change function to derive the user's intended next state.
 
 ```go
     // Derive new state.
