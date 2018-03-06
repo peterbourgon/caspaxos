@@ -24,13 +24,13 @@ func TestConfigurationChange(t *testing.T) {
 
 	// Declare some verification functions.
 	growClusterWith := func(a Acceptor) {
-		if err := GrowCluster(ctx, a, p1, p2, p3); err != nil {
+		if err := GrowCluster(ctx, a, []Proposer{p1, p2, p3}); err != nil {
 			t.Fatalf("grow cluster with %q: %v", a.Address(), err)
 		}
 	}
 
 	shrinkClusterWith := func(a Acceptor) {
-		if err := ShrinkCluster(ctx, a, p1, p2, p3); err != nil {
+		if err := ShrinkCluster(ctx, a, []Proposer{p1, p2, p3}); err != nil {
 			t.Fatalf("shrink cluster with %q: %v", a.Address(), err)
 		}
 	}
@@ -39,7 +39,7 @@ func TestConfigurationChange(t *testing.T) {
 		for name, p := range map[string]Proposer{
 			"p1": p1, "p2": p2, "p3": p3,
 		} {
-			if state, err := p.Propose(ctx, key, changeFuncRead); err != nil {
+			if state, _, err := p.Propose(ctx, key, changeFuncRead); err != nil {
 				t.Errorf("read via %s after shrink: %v", name, err)
 			} else if want, have := val0, string(state); want != have {
 				t.Errorf("read via %s after shrink: want %q, have %q", name, want, have)
