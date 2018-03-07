@@ -479,9 +479,13 @@ be sufficient.
 
 Adding an acceptor in the general case is a four-step process.
 
+### 1
+
 > **1.** Turn the new acceptor on.
 
 The acceptor will be initially empty.
+
+### 2
 
 > **2.** Connect to each proposer and update its configuration to send the
 > [second-phase] "accept" messages to the A_1 .. A_2F+2 set of acceptors and to
@@ -537,6 +541,8 @@ func GrowCluster(target Acceptor, proposers []Proposer) error {
     }
 ```
 
+### 3
+
 > **3.** Pick any proposer and execute the identity state transition function 
 > x -> x.
 
@@ -557,6 +563,8 @@ We'll use a special _zerokey_ to push the transaction through. But I don't think
 it matters which key we use, really, as long as the transaction succeeds. I
 believe the goal of this step is just to get the target acceptor to receive
 _any_ ballot number for _any_ key.
+
+### 4
 
 > **4.** Connect to each proposer and update its configuration to send "prepare"
 > messages to the A_1 .. A_2F+2 set of acceptors and to require F+2
@@ -616,6 +624,8 @@ I'll appreciate it, honest!
 
 Here's the delete process outlined by the paper.
 
+### 1
+
 > **1.** On a delete request, a system writes an empty value with regular F+1
 > "accept" quorum, schedules a garbage collection, and confirms the request to a
 > client.
@@ -623,6 +633,8 @@ Here's the delete process outlined by the paper.
 From this we learn that a delete begins by writing an empty value. Of course,
 this still occupies space in the acceptors. So now we go to reclaim that space
 with a garbage collection.
+
+### 2
 
 > **2.** The garbage collection operation (in the background)
 
@@ -638,6 +650,8 @@ For now, let's punt on these interesting questions, and instead bias toward
 correctness, by implementing GC synchronously, as part of the delete request. To
 the best of my knowledge, there's nothing in the description that _requires_ GC
 to occur asynchronously.
+
+### 2a
 
 > **(a)** Replicates an empty value to all nodes by executing the identity
 > transform with 2F+1 quorum size. Reschedules itself if at least one node is
@@ -661,6 +675,8 @@ func gcBroadcastIdentity(key string, proposers []Proposer) error {
     return nil
 }
 ```
+
+### 2b, 2c
 
 > **(b)** For each proposer, fast-forwards its counter to generate ballot
 > numbers greater than the tombstone's number.
@@ -755,6 +771,8 @@ second or two should be enough to clear any send and recv buffers, but different
 deployment environments may have radically different requirements. Without more
 specific guidance I think the best thing to do is to offer this as a parameter
 to the operator.
+
+### 2d
 
 > **(d)** For each acceptor, remove the register if its value is empty.
 
