@@ -124,6 +124,11 @@ transcribe each step, and provide my implementation interpretation.
 
 Nothing to note here.
 
+Well, maybe one thing: sending functions over the wire is not easy in languages
+like Go. It may be a good initial compromise to present a more opinionated API
+to clients, where API methods map to specific, pre-defined change functions.
+Making this work in the general case is an exercise for the reader.
+
 > **2.** The proposer generates a ballot number, B, and sends "prepare" messages
 > containing that number to the acceptors.
 
@@ -460,7 +465,143 @@ Changing the method bodies is left as an exercise for the reader.
 
 ### Configuration changes
 
-TODO
+Throughout this section we assume there is some _a priori_ set of addressable
+proposers and acceptors, somehow just known to the cluster operator. That
+assumption is fraught with peril, which we'll address in the system
+implementation notes. For now, we take it as a given.
+
+The paper describes a process for adding acceptors to the cluster, including an
+optimization in one case, and a way to also remove acceptors from the cluster.
+Implicit in this is that adding or removing _proposers_ requires no special
+work. That makes sense: proposers are basically stateless, so just starting one
+up with a unique ID and configuring it with the current set of acceptors should
+be sufficient.
+
+Adding an acceptor in the general case is a four-step process.
+
+> **1.** Turn the new acceptor on.
+
+The acceptor will be initially empty.
+
+> **2.** Connect to each proposer and update its configuration to send the
+> [second-phase] "accept" messages to the A_1 .. A_2F+2 set of acceptors and to
+> require F+2 confirmations during the "accept" phase.
+
+Note that "the A_1 .. A_2F+2 set of acceptors" means the new, larger set of
+acceptors, including the new acceptor. So, in effect, the first clause of this
+step means to add the new acceptor to each proposer's pool of accepters _only_,
+i.e. without adding it to the corresponding pool of preparers. This is why we
+need to distinguish the two roles of acceptors in preparers!
+
+The second clause, "require F+2 confirmations", means that when we compute
+desired quorum during the accept phase, we should be sure to include the new
+acceptor. But since we take quorum as `(len(p.accepters) / 2) + 1`, this happens
+automatically.
+
+Observe that this step requires connecting to each proposer. This means it has
+to be done at some conceptual or operational level "above" proposers, rather
+than as an e.g. method on a proposer. In Go I think we can model this as a
+function.
+
+```go
+func GrowCluster(target Acceptor, proposers []Proposer) error { /* ... */ }
+```
+
+This also implies that proposers will need a new set of methods, allowing
+operators to modify their sets of preparers and accepters independently.
+I'll enumerate them all here.
+
+```diff
+ // Proposer is the interface called by clients and implemented by proposers.
+ type Proposer interface {
+     Propose(f ChangeFunc) (new State, err error)
++
++    AddAccepter(target Accepter) error
++    AddPreparer(target Preparer) error
++    RemovePreparer(target Preparer) error
++    RemoveAccepter(target Accepter) error
+ }
+```
+
+Now the implementation of GrowCluster starts taking shape.
+
+```go
+func GrowCluster(target Acceptor, proposers []Proposer) error {
+    for _, p := range proposers {
+        if err := p.AddAccepter(target); err != nil {
+            return errors.Wrap(err, "adding accepter")
+        }
+    }
+```
+
+> **3.** Pick any proposer and execute the identity state transition function 
+> x -> x.
+
+This also seems straightforward.
+
+```go
+    var (
+        proposer = proposers[rand.Intn(len(proposers))]
+        identity = func(x State) State { return x }
+    )
+    if _, err := proposer.Propose(identity); err != nil {
+        return errors.Wrap(err, "executing identity function")
+    }
+```
+
+> **4.** Connect to each proposer and update its configuration to send "prepare"
+> messages to the A_1 .. A_2F+2 set of acceptors and to require F+2
+> confirmations.
+
+The final step has the same form as step two, but now dealing with the
+first-phase set of preparers. So we can model it very similarly.
+
+```go
+    for _, p := range proposers {
+        if err := p.AddPreparer(target); err != nil {
+            return errors.Wrap(err, "adding preparer")
+        }
+    }
+}
+```
+
+The inverse ShrinkCluster function is left as an exercise for the reader. 
+(The reader is free to cheat by inspecting this repo.)
+
+The paper, however, presents a slight caveat, which hinges on the difference
+between a cluster of 2F+2 nodes (an even count) and a cluster of 2F+3 nodes (an
+odd count).
+
+> The protocol for changing the set of acceptors from A_1 .. A_2F+2 to A_1 ..
+> A_2F+3 [from even to odd] is more straightforward because we can treat a 2F+2
+> nodes cluster as a 2F+3 nodes cluster where one node had been down from the
+> beginning: 
+> 
+>  1. Connect to each proposer and update its configuration to send the prepare
+>     and accept messages to the [second] A_1...A_2F+3 set of acceptors.
+>  2. Turn on the A_2F+3 acceptor.
+
+Put another way, when growing (or shrinking) a cluster from an odd number of
+acceptors to an even number of acceptors, the enumerated process is required.
+But when growing (or shrinking) a cluster from an even number of acceptors to an
+odd number of acceptors, an optimization is possible: we can first change the
+accept and prepare lists of all proposers, and then turn the acceptor on, and
+avoid the cost of an identity read.
+
+I think this is probably not worth implementing, for several reasons. First,
+cluster membership changes are rare and operator-driven, and so don't really
+benefit from the lower latency as much as reads or writes would. Second, the
+number of acceptors in the cluster is not necessarily known a priori, and can in
+theory drift between different proposers; calculating the correct value is
+difficult in itself, probably requiring asking some other source of authority.
+Third, in production environments, there's great value in having a consistent
+process for any cluster change; turning a node on at different points in that
+process depending on the cardinality of the node-set is fraught with peril.
+
+With that said, it's definitely possible I'm overlooking something, or my set of
+assumptions may not be valid in your environment. Please think critically about
+your use case, and provide me feedback if you think I've got something wrong.
+I'll appreciate it, honest!
 
 ### Deletes
 
