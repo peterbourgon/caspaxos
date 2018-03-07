@@ -120,7 +120,7 @@ Now let's talk about what needs to happen in Propose, Prepare, and Accept.
 Luckily, the protocol is pretty explicitly laid-out in the paper. I'll
 transcribe each step, and provide my implementation interpretation.
 
-#### 1
+#### Propose step 1
 
 > A client submits the _f_ change to a proposer.
 
@@ -131,7 +131,7 @@ like Go. It may be a good initial compromise to present a more opinionated API
 to clients, where API methods map to specific, pre-defined change functions.
 Making this work in the general case is an exercise for the reader.
 
-#### 2
+#### Propose step 2
 
 > The proposer generates a ballot number, B, and sends "prepare" messages
 > containing that number to the acceptors.
@@ -168,7 +168,7 @@ for each preparer-stage acceptor a:
 
 We'll convert this to Go in a moment.
 
-#### 3
+#### Propose step 3
 
 > An acceptor [r]eturns a conflict if it already saw a greater ballot number.
 > [Otherwise, it p]ersists the ballot number as a promise, and returns a
@@ -220,7 +220,7 @@ a value yet.
 }
 ```
 
-#### 4
+#### Propose step 4
 
 > The proposer waits for F+1 confirmations. If they all contain the empty value,
 > then the proposer defines the current state as Ø; otherwise, it picks the
@@ -367,7 +367,7 @@ Now we need to do _another_ broadcast to all the acceptors, this time with an
 
 Now we turn our attention back to the acceptor.
 
-#### 5
+#### Propose step 5
 
 > An acceptor returns a conflict if it already saw a greater ballot number.
 > [Otherwise, it] erases the promise, marks the received tuple (ballot number,
@@ -393,7 +393,7 @@ func (a myAcceptor) Accept(b Ballot, new State) error {
 }
 ```
 
-#### 6 
+#### Propose step 6 
 
 > The proposer waits for the F+1 confirmations.
 > [It then] returns the new state to the client.
@@ -491,13 +491,13 @@ be sufficient.
 
 Adding an acceptor in the general case is a four-step process.
 
-#### 1
+#### Grow step 1
 
 > Turn the new acceptor on.
 
 The acceptor will be initially empty.
 
-#### 2
+#### Grow step 2
 
 > Connect to each proposer and update its configuration to send the
 > [second-phase] "accept" messages to the A_1 .. A_2F+2 set of acceptors and to
@@ -553,7 +553,7 @@ func GrowCluster(target Acceptor, proposers []Proposer) error {
     }
 ```
 
-#### 3
+#### Grow step 3
 
 > Pick any proposer and execute the identity state transition function x -> x.
 
@@ -575,7 +575,7 @@ it matters which key we use, really, as long as the transaction succeeds. I
 believe the goal of this step is just to get the target acceptor to receive
 _any_ ballot number for _any_ key.
 
-#### 4
+#### Grow step 4
 
 > Connect to each proposer and update its configuration to send "prepare"
 > messages to the A_1 .. A_2F+2 set of acceptors and to require F+2
@@ -635,7 +635,7 @@ I'll appreciate it, honest!
 
 Here's the delete process outlined by the paper.
 
-#### 1
+#### Delete step 1
 
 > On a delete request, a system writes an empty value with regular F+1 "accept"
 > quorum, schedules a garbage collection, and confirms the request to a client.
@@ -644,7 +644,7 @@ From this we learn that a delete begins by writing an empty value. Of course,
 this still occupies space in the acceptors. So now we go to reclaim that space
 with a garbage collection.
 
-#### 2
+#### Delete step 2
 
 > The garbage collection operation (in the background)
 
@@ -661,7 +661,7 @@ correctness, by implementing GC synchronously, as part of the delete request. To
 the best of my knowledge, there's nothing in the description that _requires_ GC
 to occur asynchronously.
 
-#### 2a
+#### Delete step 2a
 
 > Replicates an empty value to all nodes by executing the identity transform
 > with 2F+1 quorum size. Reschedules itself if at least one node is down.
@@ -685,7 +685,7 @@ func gcBroadcastIdentity(key string, proposers []Proposer) error {
 }
 ```
 
-#### 2b, 2c
+#### Delete steps 2b, 2c
 
 > For each proposer, fast-forwards its counter to generate ballot numbers
 > greater than the tombstone's number.
@@ -781,7 +781,7 @@ deployment environments may have radically different requirements. Without more
 specific guidance I think the best thing to do is to offer this as a parameter
 to the operator.
 
-#### 2d
+#### Delete step 2d
 
 > For each acceptor, remove the register if its value is empty.
 
