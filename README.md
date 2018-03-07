@@ -120,7 +120,9 @@ Now let's talk about what needs to happen in Propose, Prepare, and Accept.
 Luckily, the protocol is pretty explicitly laid-out in the paper. I'll
 transcribe each step, and provide my implementation interpretation.
 
-> **1.** A client submits the _f_ change to a proposer.
+#### 1
+
+> A client submits the _f_ change to a proposer.
 
 Nothing to note here.
 
@@ -129,7 +131,9 @@ like Go. It may be a good initial compromise to present a more opinionated API
 to clients, where API methods map to specific, pre-defined change functions.
 Making this work in the general case is an exercise for the reader.
 
-> **2.** The proposer generates a ballot number, B, and sends "prepare" messages
+#### 2
+
+> The proposer generates a ballot number, B, and sends "prepare" messages
 > containing that number to the acceptors.
 
 Ballot numbers must be monotonically increasing, so one important observation is
@@ -164,8 +168,10 @@ for each preparer-stage acceptor a:
 
 We'll convert this to Go in a moment.
 
-> **3.** An acceptor [r]eturns a conflict if it already saw a greater ballot
-> number. [Otherwise, it p]ersists the ballot number as a promise, and returns a
+#### 3
+
+> An acceptor [r]eturns a conflict if it already saw a greater ballot number.
+> [Otherwise, it p]ersists the ballot number as a promise, and returns a
 > confirmation either with an empty value (if it hasn't accepted any value yet)
 > or with a tuple of an accepted value and its ballot number.
 
@@ -214,9 +220,11 @@ a value yet.
 }
 ```
 
-> **4.** The proposer waits for F+1 confirmations. If they all contain the empty
-> value, then the proposer defines the current state as Ø; otherwise, it picks
-> the value of the tuple with the highest ballot number. 
+#### 4
+
+> The proposer waits for F+1 confirmations. If they all contain the empty value,
+> then the proposer defines the current state as Ø; otherwise, it picks the
+> value of the tuple with the highest ballot number. 
 >
 > [The proposer] applies the _f_ function to the current state and sends the
 > result[ing] new state, along with the generated ballot number B (i.e. an
@@ -359,9 +367,11 @@ Now we need to do _another_ broadcast to all the acceptors, this time with an
 
 Now we turn our attention back to the acceptor.
 
-> **5.** An acceptor returns a conflict if it already saw a greater ballot
-> number. [Otherwise, it] erases the promise, marks the received tuple (ballot
-> number, value) as the accepted value, and returns a confirmation.
+#### 5
+
+> An acceptor returns a conflict if it already saw a greater ballot number.
+> [Otherwise, it] erases the promise, marks the received tuple (ballot number,
+> value) as the accepted value, and returns a confirmation.
 
 Same as in the prepare phase, a conflict occurs if the submitted ballot number
 isn't greater than _either_ of the stored ballot numbers. Beyond that, the
@@ -383,7 +393,9 @@ func (a myAcceptor) Accept(b Ballot, new State) error {
 }
 ```
 
-> **6.** The proposer waits for the F+1 confirmations.
+#### 6 
+
+> The proposer waits for the F+1 confirmations.
 > [It then] returns the new state to the client.
 
 This maps to another gather step, almost identical to the first phase.
@@ -479,15 +491,15 @@ be sufficient.
 
 Adding an acceptor in the general case is a four-step process.
 
-### 1
+#### 1
 
-> **1.** Turn the new acceptor on.
+> Turn the new acceptor on.
 
 The acceptor will be initially empty.
 
-### 2
+#### 2
 
-> **2.** Connect to each proposer and update its configuration to send the
+> Connect to each proposer and update its configuration to send the
 > [second-phase] "accept" messages to the A_1 .. A_2F+2 set of acceptors and to
 > require F+2 confirmations during the "accept" phase.
 
@@ -541,10 +553,9 @@ func GrowCluster(target Acceptor, proposers []Proposer) error {
     }
 ```
 
-### 3
+#### 3
 
-> **3.** Pick any proposer and execute the identity state transition function 
-> x -> x.
+> Pick any proposer and execute the identity state transition function x -> x.
 
 This also seems straightforward.
 
@@ -564,9 +575,9 @@ it matters which key we use, really, as long as the transaction succeeds. I
 believe the goal of this step is just to get the target acceptor to receive
 _any_ ballot number for _any_ key.
 
-### 4
+#### 4
 
-> **4.** Connect to each proposer and update its configuration to send "prepare"
+> Connect to each proposer and update its configuration to send "prepare"
 > messages to the A_1 .. A_2F+2 set of acceptors and to require F+2
 > confirmations.
 
@@ -624,19 +635,18 @@ I'll appreciate it, honest!
 
 Here's the delete process outlined by the paper.
 
-### 1
+#### 1
 
-> **1.** On a delete request, a system writes an empty value with regular F+1
-> "accept" quorum, schedules a garbage collection, and confirms the request to a
-> client.
+> On a delete request, a system writes an empty value with regular F+1 "accept"
+> quorum, schedules a garbage collection, and confirms the request to a client.
 
 From this we learn that a delete begins by writing an empty value. Of course,
 this still occupies space in the acceptors. So now we go to reclaim that space
 with a garbage collection.
 
-### 2
+#### 2
 
-> **2.** The garbage collection operation (in the background)
+> The garbage collection operation (in the background)
 
 The paper stipulates the GC should occur in the background, outside of the
 client request path. That's fair, but to my mind it implies that some kind of
@@ -651,11 +661,10 @@ correctness, by implementing GC synchronously, as part of the delete request. To
 the best of my knowledge, there's nothing in the description that _requires_ GC
 to occur asynchronously.
 
-### 2a
+#### 2a
 
-> **(a)** Replicates an empty value to all nodes by executing the identity
-> transform with 2F+1 quorum size. Reschedules itself if at least one node is
-> down.
+> Replicates an empty value to all nodes by executing the identity transform
+> with 2F+1 quorum size. Reschedules itself if at least one node is down.
 
 Here we have another application of the now-familiar gambit of performing an
 identity read, presumably to increment ballot numbers beyond the delete
@@ -676,13 +685,13 @@ func gcBroadcastIdentity(key string, proposers []Proposer) error {
 }
 ```
 
-### 2b, 2c
+#### 2b, 2c
 
-> **(b)** For each proposer, fast-forwards its counter to generate ballot
-> numbers greater than the tombstone's number.
+> For each proposer, fast-forwards its counter to generate ballot numbers
+> greater than the tombstone's number.
 >
-> **(c)** Wait some time to make sure that all in-channel messages
-> with lesser ballots were delivered.
+> Wait some time to make sure that all in-channel messages with lesser ballots
+> were delivered.
 
 This is quite interesting, and somewhat vague: what's a tombstone? What channel
 are we talking about? If we read further below, we get some hints.
@@ -772,9 +781,9 @@ deployment environments may have radically different requirements. Without more
 specific guidance I think the best thing to do is to offer this as a parameter
 to the operator.
 
-### 2d
+#### 2d
 
-> **(d)** For each acceptor, remove the register if its value is empty.
+> For each acceptor, remove the register if its value is empty.
 
 That seems easy enough.
 
