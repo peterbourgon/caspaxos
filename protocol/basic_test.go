@@ -1,4 +1,4 @@
-package caspaxos
+package protocol
 
 import (
 	"bytes"
@@ -34,7 +34,7 @@ func TestInitializeOnlyOnce(t *testing.T) {
 	)
 
 	// The first proposal should work.
-	have, err := p1.Propose(ctx, key, initialize)
+	have, _, err := p1.Propose(ctx, key, initialize)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -43,14 +43,14 @@ func TestInitializeOnlyOnce(t *testing.T) {
 	}
 
 	// If we make a read from anywhere, we should see the right thing.
-	have, err = p2.Propose(ctx, key, changeFuncRead)
+	have, _, err = p2.Propose(ctx, key, changeFuncRead)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if want, have := "val0", string(have); want != have {
 		t.Errorf("want %q, have %q", want, have)
 	}
-	have, err = p3.Propose(ctx, key, changeFuncRead)
+	have, _, err = p3.Propose(ctx, key, changeFuncRead)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,14 +59,14 @@ func TestInitializeOnlyOnce(t *testing.T) {
 	}
 
 	// Subsequent proposals should succeed but leave the value un-altered.
-	have, err = p2.Propose(ctx, key, differentInit)
+	have, _, err = p2.Propose(ctx, key, differentInit)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if want, have := "val0", string(have); want != have {
 		t.Errorf("want %q, have %q", want, have)
 	}
-	have, err = p3.Propose(ctx, key, stillDifferentInit)
+	have, _, err = p3.Propose(ctx, key, stillDifferentInit)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,7 +98,7 @@ func TestFastForward(t *testing.T) {
 	for name, p := range map[string]*LocalProposer{
 		"p2": p2, "p3": p3,
 	} {
-		if val, err := p.Propose(ctx, key, changeFuncRead); err != nil {
+		if val, _, err := p.Propose(ctx, key, changeFuncRead); err != nil {
 			t.Errorf("%s second read: got unexpected error: %v", name, err)
 		} else if want, have := val0, string(val); want != have {
 			t.Errorf("%s second read: want %q, have %q", name, want, have)
@@ -126,12 +126,12 @@ func TestMultiKeyReads(t *testing.T) {
 	p2.Propose(ctx, "k2", changeFuncInitializeOnlyOnce("v2"))
 
 	// Reads should work through a still-different proposer.
-	if val, err := p3.Propose(ctx, "k1", changeFuncRead); err != nil {
+	if val, _, err := p3.Propose(ctx, "k1", changeFuncRead); err != nil {
 		t.Errorf("read k1 via p3: %v", err)
 	} else if want, have := "v1", string(val); want != have {
 		t.Errorf("read k1 via p3: want %q, have %q", want, have)
 	}
-	if val, err := p3.Propose(ctx, "k2", changeFuncRead); err != nil {
+	if val, _, err := p3.Propose(ctx, "k2", changeFuncRead); err != nil {
 		t.Errorf("read k2 via p3: %v", err)
 	} else if want, have := "v2", string(val); want != have {
 		t.Errorf("read k2 via p3: want %q, have %q", want, have)
@@ -192,7 +192,7 @@ func TestConcurrentCASWrites(t *testing.T) {
 				p = randomProposer()
 				f = cas(prev, next)
 			)
-			have, err := p.Propose(ctx, key, f)
+			have, _, err := p.Propose(ctx, key, f)
 			if err != nil {
 				t.Errorf("%s worker: step %d (%s -> %s): %v", key, i+1, prettyPrint(prev), prettyPrint(next), err)
 				return
@@ -220,13 +220,26 @@ func TestConcurrentCASWrites(t *testing.T) {
 	// This is kind of needless, but verify the final state with a read.
 	for key, values := range mutations {
 		var (
-			final   = values[len(values)-1]
-			have, _ = randomProposer().Propose(ctx, key, changeFuncRead)
+			final      = values[len(values)-1]
+			have, _, _ = randomProposer().Propose(ctx, key, changeFuncRead)
 		)
 		if want, have := string(final), string(have); want != have {
 			t.Errorf("%s: final state: want %s, have %s", key, want, have)
 		}
 	}
+}
+
+func changeFuncInitializeOnlyOnce(s string) ChangeFunc {
+	return func(x []byte) []byte {
+		if x == nil {
+			return []byte(s)
+		}
+		return x
+	}
+}
+
+func changeFuncRead(x []byte) []byte {
+	return x
 }
 
 type prettyPrint []byte
@@ -236,4 +249,11 @@ func (pp prettyPrint) String() string {
 		return "Ø"
 	}
 	return string(pp)
+}
+
+type testWriter struct{ t *testing.T }
+
+func (tw testWriter) Write(p []byte) (int, error) {
+	tw.t.Logf("%s", string(p))
+	return len(p), nil
 }

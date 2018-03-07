@@ -1,4 +1,4 @@
-package caspaxos
+package protocol
 
 import (
 	"context"
@@ -8,32 +8,6 @@ import (
 	"github.com/go-kit/kit/log"
 	"github.com/go-kit/kit/log/level"
 )
-
-// Acceptor models a complete, uniquely-addressable acceptor.
-//
-// Here we have a little fun with names: use Acceptor (-or) as a noun, to model
-// the whole composite acceptor, and Accepter (-er) as a verb, to model the
-// second-phase "accept" responsibilities only.
-type Acceptor interface {
-	Addresser
-	Preparer
-	Accepter
-}
-
-// Addresser models something with a unique address.
-type Addresser interface {
-	Address() string // typically "protocol://host:port"
-}
-
-// Preparer models the first-phase responsibilities of an acceptor.
-type Preparer interface {
-	Prepare(ctx context.Context, key string, b Ballot) (value []byte, current Ballot, err error)
-}
-
-// Accepter models the second-phase responsibilities of an acceptor.
-type Accepter interface {
-	Accept(ctx context.Context, key string, b Ballot, value []byte) error
-}
 
 // ChangeFunc models client change proposals.
 type ChangeFunc func(current []byte) (new []byte)
@@ -52,9 +26,9 @@ var (
 	ErrNotFound = errors.New("not found")
 )
 
-// LocalProposer performs the initialization by communicating with acceptors,
-// and keep minimal state needed to generate unique increasing update IDs
-// (ballot numbers).
+// LocalProposer (from the paper) "performs the initialization by communicating
+// with acceptors, and keep minimal state needed to generate unique increasing
+// update IDs (ballot numbers)."
 type LocalProposer struct {
 	mtx       sync.Mutex
 	ballot    Ballot
@@ -80,19 +54,20 @@ func NewLocalProposer(id uint64, logger log.Logger, initial ...Acceptor) *LocalP
 }
 
 // Propose a change from a client into the cluster.
-func (p *LocalProposer) Propose(ctx context.Context, key string, f ChangeFunc) (newState []byte, err error) {
+func (p *LocalProposer) Propose(ctx context.Context, key string, f ChangeFunc) (state []byte, b Ballot, err error) {
 	p.mtx.Lock()
 	defer p.mtx.Unlock()
 
-	newState, err = p.propose(ctx, key, f)
+	state, b, err = p.propose(ctx, key, f)
 	if err == ErrPrepareFailed {
-		newState, err = p.propose(ctx, key, f) // allow a single retry, to hide fast-forwards
+		// allow a single retry, to hide fast-forwards
+		state, b, err = p.propose(ctx, key, f)
 	}
 
-	return newState, err
+	return state, b, err
 }
 
-func (p *LocalProposer) propose(ctx context.Context, key string, f ChangeFunc) (newState []byte, err error) {
+func (p *LocalProposer) propose(ctx context.Context, key string, f ChangeFunc) (state []byte, b Ballot, err error) {
 	// From the paper: "A client submits the change function to a proposer. The
 	// proposer generates a ballot number B, by incrementing the current ballot
 	// number's counter."
@@ -101,7 +76,7 @@ func (p *LocalProposer) propose(ctx context.Context, key string, f ChangeFunc) (
 	// rystsov: "I proved correctness for the case when each *attempt* has a
 	// unique ballot number. [Otherwise] I would bet that linearizability may be
 	// violated."
-	b := p.ballot.inc()
+	b = p.ballot.inc()
 
 	// Set up a logger, for debugging.
 	logger := level.Debug(log.With(p.logger, "method", "Propose", "key", key, "B", b))
@@ -179,7 +154,7 @@ func (p *LocalProposer) propose(ctx context.Context, key string, f ChangeFunc) (
 		if quorum > 0 {
 			logger.Log("result", "failed", "fast_forward_to", biggestConflict.Counter)
 			p.ballot.Counter = biggestConflict.Counter // fast-forward
-			return nil, ErrPrepareFailed
+			return nil, b, ErrPrepareFailed
 		}
 
 		logger.Log("result", "success")
@@ -189,7 +164,7 @@ func (p *LocalProposer) propose(ctx context.Context, key string, f ChangeFunc) (
 	// proposer applies the change function to the current state. It will send
 	// that new state along with the generated ballot number B (together, known
 	// as an "accept" message) to the acceptors."
-	newState = f(currentState)
+	newState := f(currentState)
 
 	// Accept phase.
 	{
@@ -229,7 +204,7 @@ func (p *LocalProposer) propose(ctx context.Context, key string, f ChangeFunc) (
 		// If we don't get quorum, I guess we must fail the proposal.
 		if quorum > 0 {
 			logger.Log("result", "failed", "err", "not enough confirmations")
-			return nil, ErrAcceptFailed
+			return nil, b, ErrAcceptFailed
 		}
 
 		// Log the success.
@@ -237,7 +212,7 @@ func (p *LocalProposer) propose(ctx context.Context, key string, f ChangeFunc) (
 	}
 
 	// Return the new state to the caller.
-	return newState, nil
+	return newState, b, nil
 }
 
 // AddAccepter adds the target acceptor to the pool of accepters used in the
@@ -289,5 +264,16 @@ func (p *LocalProposer) RemoveAccepter(target Acceptor) error {
 		return ErrNotFound
 	}
 	delete(p.accepters, target.Address())
+	return nil
+}
+
+// FastForward ensures that the ballot number's counter is larger than the
+// tombstone. It's used by the garbage collection process to delete keys.
+func (p *LocalProposer) FastForward(tombstone uint64) error {
+	p.mtx.Lock()
+	defer p.mtx.Unlock()
+	if p.ballot.Counter < (tombstone + 1) {
+		p.ballot.Counter = (tombstone + 1)
+	}
 	return nil
 }

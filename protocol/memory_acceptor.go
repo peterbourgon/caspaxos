@@ -1,13 +1,19 @@
-package caspaxos
+package protocol
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 
 	"github.com/go-kit/kit/log"
 	"github.com/go-kit/kit/log/level"
 )
+
+// ErrNotEmpty is returned when a delete request comes for a non-empty key,
+// or when an identity read is performed as part of garbage collection and
+// a non-empty state is returned.
+var ErrNotEmpty = errors.New("not empty")
 
 // MemoryAcceptor persists data in-memory.
 type MemoryAcceptor struct {
@@ -128,6 +134,32 @@ func (a *MemoryAcceptor) Accept(ctx context.Context, key string, b Ballot, value
 	a.values[key] = av
 
 	// From the paper: "Return a confirmation."
+	return nil
+}
+
+// RemoveIfEmpty implements the garbage collection responsibilities of an
+// acceptor.
+func (a *MemoryAcceptor) RemoveIfEmpty(ctx context.Context, key string) (err error) {
+	defer func() {
+		level.Debug(a.logger).Log(
+			"method", "RemoveIfEmpty", "key", key,
+			"success", err == nil, "err", err,
+		)
+	}()
+
+	a.mtx.Lock()
+	defer a.mtx.Unlock()
+
+	av, ok := a.values[key]
+	if !ok {
+		return nil // great, no work to do
+	}
+
+	if len(av.value) != 0 {
+		return ErrNotEmpty
+	}
+
+	delete(a.values, key)
 	return nil
 }
 

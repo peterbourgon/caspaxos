@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"strings"
 
 	"github.com/go-kit/kit/log"
 	"github.com/go-kit/kit/log/level"
@@ -11,16 +12,16 @@ import (
 	"github.com/pkg/errors"
 )
 
-// Resolver models net.DefaultResolver.
-type Resolver interface {
+// resolver models net.DefaultResolver.
+type resolver interface {
 	LookupIPAddr(ctx context.Context, address string) ([]net.IPAddr, error)
 }
 
-// CalculateAdvertiseIP deduces the best IP on which to advertise our API
+// calculateAdvertiseIP deduces the best IP on which to advertise our API
 // based on a user-provided bind host and advertise host. This code lifts
 // some logic out of the memberlist internals, and augments it with extra
 // logic to resolve hostnames. (Memberlist demands pure IPs.)
-func CalculateAdvertiseIP(bindHost, advertiseHost string, resolver Resolver, logger log.Logger) (net.IP, error) {
+func calculateAdvertiseIP(bindHost, advertiseHost string, r resolver, logger log.Logger) (net.IP, error) {
 	// Prefer advertise host, if it's given.
 	if advertiseHost != "" {
 		// Best case: parse a plain IP.
@@ -32,7 +33,7 @@ func CalculateAdvertiseIP(bindHost, advertiseHost string, resolver Resolver, log
 		}
 
 		// Otherwise, try to resolve it as if it's a hostname.
-		ips, err := resolver.LookupIPAddr(context.Background(), advertiseHost)
+		ips, err := r.LookupIPAddr(context.Background(), advertiseHost)
 		if err == nil && len(ips) == 1 {
 			if ip4 := ips[0].IP.To4(); ip4 != nil {
 				ips[0].IP = ip4
@@ -69,7 +70,7 @@ func CalculateAdvertiseIP(bindHost, advertiseHost string, resolver Resolver, log
 	}
 
 	// And finally, try to resolve the bind host.
-	ips, err := resolver.LookupIPAddr(context.Background(), bindHost)
+	ips, err := r.LookupIPAddr(context.Background(), bindHost)
 	if err == nil && len(ips) == 1 {
 		if ip4 := ips[0].IP.To4(); ip4 != nil {
 			ips[0].IP = ip4
@@ -82,4 +83,30 @@ func CalculateAdvertiseIP(bindHost, advertiseHost string, resolver Resolver, log
 		err = fmt.Errorf("bind host '%s' resolved to %d IPs", bindHost, len(ips))
 	}
 	return nil, errors.Wrap(err, "bind host failed to resolve")
+}
+
+func hasNonlocal(hostports []string) bool {
+	for _, hostport := range hostports {
+		if host, _, err := net.SplitHostPort(hostport); err == nil {
+			hostport = host
+		}
+		if ip := net.ParseIP(hostport); ip != nil && !ip.IsLoopback() {
+			return true
+		} else if ip == nil && strings.ToLower(hostport) != "localhost" {
+			return true
+		}
+	}
+	return false
+}
+
+func isUnroutable(addr string) bool {
+	if host, _, err := net.SplitHostPort(addr); err == nil {
+		addr = host
+	}
+	if ip := net.ParseIP(addr); ip != nil && (ip.IsUnspecified() || ip.IsLoopback()) {
+		return true // typically 0.0.0.0 or localhost
+	} else if ip == nil && strings.ToLower(addr) == "localhost" {
+		return true
+	}
+	return false
 }
