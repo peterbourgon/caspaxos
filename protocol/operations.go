@@ -14,7 +14,7 @@ import (
 type Proposer interface {
 	// Propose is the primary API for clients. All changes including reads are
 	// sent this way.
-	Propose(ctx context.Context, key string, f ChangeFunc) (state []byte, ballot Ballot, err error)
+	Propose(ctx context.Context, key string, f ChangeFunc) (state []byte, b Ballot, err error)
 
 	// These methods are for configuration changes.
 	AddAccepter(target Acceptor) error

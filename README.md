@@ -512,9 +512,8 @@ operators to modify their sets of preparers and accepters independently.
 I'll enumerate them all here.
 
 ```diff
- // Proposer is the interface called by clients and implemented by proposers.
  type Proposer interface {
-     Propose(f ChangeFunc) (new State, err error)
+     Propose(key string, f ChangeFunc) (new State, err error)
 +
 +    AddAccepter(target Accepter) error
 +    AddPreparer(target Preparer) error
@@ -522,6 +521,10 @@ I'll enumerate them all here.
 +    RemoveAccepter(target Accepter) error
  }
 ```
+
+Observe that we don't have a key parameter in any of these methods. That's
+because each acceptor (each accepter and preparer) can service all keys. There's
+no need to have per-key pools of acceptors (accepters and preparers).
 
 Now the implementation of GrowCluster starts taking shape.
 
@@ -542,12 +545,18 @@ This also seems straightforward.
 ```go
     var (
         proposer = proposers[rand.Intn(len(proposers))]
+        zerokey  = "" // special key we don't allow users to modify
         identity = func(x State) State { return x }
     )
-    if _, err := proposer.Propose(identity); err != nil {
+    if _, err := proposer.Propose(zerokey, identity); err != nil {
         return errors.Wrap(err, "executing identity function")
     }
 ```
+
+We'll use a special _zerokey_ to push the transaction through. But I don't think
+it matters which key we use, really, as long as the transaction succeeds. I
+believe the goal of this step is just to get the target acceptor to receive
+_any_ ballot number for _any_ key.
 
 > **4.** Connect to each proposer and update its configuration to send "prepare"
 > messages to the A_1 .. A_2F+2 set of acceptors and to require F+2
@@ -605,7 +614,239 @@ I'll appreciate it, honest!
 
 ### Deletes
 
-TODO
+Here's the delete process outlined by the paper.
+
+> **1.** On a delete request, a system writes an empty value with regular F+1
+> "accept" quorum, schedules a garbage collection, and confirms the request to a
+> client.
+
+From this we learn that a delete begins by writing an empty value. Of course,
+this still occupies space in the acceptors. So now we go to reclaim that space
+with a garbage collection.
+
+> **2.** The garbage collection operation (in the background)
+
+The paper stipulates the GC should occur in the background, outside of the
+client request path. That's fair, but to my mind it implies that some kind of
+resilience is necessary, to prevent GC request from being lost. I guess that
+means either persisting GC requests and re/loading them on process start; or,
+perhaps better, implementing them by some kind of continuous stateless process
+which is able to scan the keyspace and identify deleted keys that should be
+deleted _a priori_. 
+
+For now, let's punt on these interesting questions, and instead bias toward
+correctness, by implementing GC synchronously, as part of the delete request. To
+the best of my knowledge, there's nothing in the description that _requires_ GC
+to occur asynchronously.
+
+> **(a)** Replicates an empty value to all nodes by executing the identity
+> transform with 2F+1 quorum size. Reschedules itself if at least one node is
+> down.
+
+Here we have another application of the now-familiar gambit of performing an
+identity read, presumably to increment ballot numbers beyond the delete
+operation. What's interesting (and in some sense quite amusing) is that we need
+to do this against every node (meaning proposer) and should retry the whole
+operation if any node (proposer) is down. That's a very brute-force approach to
+GC, which is nice and practical — and probably amenable to batching.
+
+```go
+func gcBroadcastIdentity(key string, proposers []Proposer) error {
+    identity := func(x State) State { return x }
+    for _, p := range proposers {
+        if _, err := p.Propose(key, identity); err != nil {
+            return err
+        }
+    }
+    return nil
+}
+```
+
+> **(b)** For each proposer, fast-forwards its counter to generate ballot
+> numbers greater than the tombstone's number.
+>
+> **(c)** Wait some time to make sure that all in-channel messages
+> with lesser ballots were delivered.
+
+This is quite interesting, and somewhat vague: what's a tombstone? What channel
+are we talking about? If we read further below, we get some hints.
+
+> The steps 2b and 2c are necessary to eliminate a situation when a register was
+> removed from F+1 acceptors, and they accepted [a] value with [a] lesser ballot
+> number than the ballot number of the empty value still stored on [the] other F
+> acceptors.
+
+This implies that tombstone is the ballot number (or, more specifically, the
+ballot number counter) of the identity read transform we've just executed. But
+we've presumably executed that transform via the normal proposer.Propose method,
+which doesn't return anything about its ballot number! So, assuming we don't
+want to create a new proposal mechanism for the delete process, it seems we'll
+need to make a modification to the Propose method, to return the resulting
+ballot number.
+
+```diff
+ type Proposer interface {
+-    Propose(f ChangeFunc) (new State, err error)
++    Propose(f ChangeFunc) (new State, b Ballot, err error)
+
+     AddAccepter(target Accepter) error
+     AddPreparer(target Preparer) error
+     RemovePreparer(target Preparer) error
+     RemoveAccepter(target Accepter) error
+ }
+```
+
+Remember that we've sent multiple identity reads, to each proposer. That means
+we'll get a bunch of unique ballot numbers back. We can pick the tombstone as
+the greatest of those ballot numbers, and issue fast-forward requests with that
+value. 
+
+```diff
+-func gcBroadcastIdentity(key string, proposers []Proposer) error {
++func gcBroadcastIdentity(key string, proposers []Proposer) (tombstone uint64, error) {
+     identity := func(x State) State { return x }
++    var winning Ballot
+     for _, p := range proposers {
+-        if _, err := p.Propose(key, identity); err != nil {
++        _, b, err := p.Propose(key, identity)
++        if err != nil {
+-            return err
++            return 0, err
+         }
++        if b.greaterThan(winning) {
++            winning = b
++        }
+     }
+-    return nil
++    return winning.Counter, nil
+ }
+```
+
+Of course, we don't have a fast-forward method, either, yet.
+
+```diff
+ type Proposer interface {
+     Propose(f ChangeFunc) (new State, b Ballot, err error)
+
+     AddAccepter(target Accepter) error
+     AddPreparer(target Preparer) error
+     RemovePreparer(target Preparer) error
+     RemoveAccepter(target Accepter) error
++
++    FastForward(tombstone uint64) error
+ }
+```
+
+Now we can write our fast-forward function.
+
+```go
+func gcFastForward(tombstone uint64, proposers []Proposer) error {
+    for _, p := range proposers {
+        if err := p.FastForward(tombstone); err != nil {
+            return err
+        }
+    }
+    return nil
+}
+```
+
+As for waiting, I guess we can't make general guidance here. It seems like a
+second or two should be enough to clear any send and recv buffers, but different
+deployment environments may have radically different requirements. Without more
+specific guidance I think the best thing to do is to offer this as a parameter
+to the operator.
+
+> **(d)** For each acceptor, remove the register if its value is empty.
+
+That seems easy enough.
+
+```diff
+ type Acceptor interface {
+     Prepare(b Ballot) (s State, b Ballot, err error)
+     Accept(b Ballot, s State) (err error)
++    RemoveIfEmpty() error
+ }
+```
+
+And a function remove-if-empty from all acceptors.
+
+```go
+func gcRemoveIfEmpty(key string, acceptors []Acceptor) error {
+    for _, a := range acceptors {
+        if err := a.RemoveIfEmpty(key); err != nil {
+            return err
+        }
+    }
+    return nil
+}
+```
+
+Now we can write a naïve GarbageCollect function, taking a key that's already
+accepted a zero value.
+
+```go
+func GarbageCollect(key string, delay time.Duration, proposers []Proposer, acceptors []Acceptor) error {
+    for {
+        // (a)
+        tombstone, err := gcBroadcastIdentity(key, proposers)
+        if err != nil {
+            time.Sleep(time.Second) // or whatever
+            continue                // retry
+        }
+
+        // (b)
+        if err := gcFastForward(tombstone, proposers); err != nil {
+            return err // an error at this stage is fatal
+        }
+
+        // (c)
+        time.Sleep(delay)
+
+        // (d)
+        if err := gcRemoveIfEmpty(key, acceptors); err != nil {
+            return err
+        }
+
+        return nil
+    }
+}
+```
+
+Observe that deletes are more like configuration changes than reads or writes
+(proposals), because the process requires specific access to all proposers and
+acceptors individually. I think it implies a system design that looks either
+like this:
+
+```
++------+-----+    +-----------+   +-----------+
+| User | Set |--->| Proposers |-->| Acceptors |
+| API  +-----+    |           |   |           |  
+|      | Get |--->|           |   |           |
+|      +-----+    |           |   |           |
+|      | Del |--->|           |   |           |
+|      |     |    +-----------+   |           |  
+|      |     |------------------->|           |
++------+-----+                    +-----------+
+```
+
+Or, maybe equivalently, like this:
+
+```
++------+-----+    +------------+   +-----------+   +-----------+
+| User | Set |--->| Controller |-->| Proposers |-->| Acceptors |
+| API  +-----+    |            |   |           |   |           |  
+|      | Get |--->|            |-->|           |   |           |
+|      +-----+    |            |   |           |   |           |
+|      | Del |--->|            |-->|           |   |           |
++------+-----+    |            |   +-----------+   |           |  
+                  |            |------------------>|           |
+                  +------------+                   +-----------+
+```
+
+That is, the user API can't make do with access to an arbitrary proposer. Either
+the user API, or a proxy for the user API, has to have access to the complete
+set of all nodes in the cluster. Put still another way, a proposer's Propose
+method is not a sufficient user API.
 
 ### Optimizations
 
@@ -630,8 +871,10 @@ with an eventually-consistent gossip membership layer as the control plane. In
 this section, we'll sketch out what such a system would look like.
 
 This is an opinionated approach. Other, radically different approaches are also
-viable. As always, carefully consider your operational requirements to determine
-which approach is best for your use-case.
+viable. For example, a configuration management system like Chef could drive
+node provisioning. Or, a CASPaxos operator could be written for Kubernetes. As
+always, carefully consider your operational requirements to determine which
+approach is best for your use-case.
 
 ### Safety
 

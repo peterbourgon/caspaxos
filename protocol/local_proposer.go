@@ -54,20 +54,20 @@ func NewLocalProposer(id uint64, logger log.Logger, initial ...Acceptor) *LocalP
 }
 
 // Propose a change from a client into the cluster.
-func (p *LocalProposer) Propose(ctx context.Context, key string, f ChangeFunc) (newState []byte, newBallot Ballot, err error) {
+func (p *LocalProposer) Propose(ctx context.Context, key string, f ChangeFunc) (state []byte, b Ballot, err error) {
 	p.mtx.Lock()
 	defer p.mtx.Unlock()
 
-	newState, newBallot, err = p.propose(ctx, key, f)
+	state, b, err = p.propose(ctx, key, f)
 	if err == ErrPrepareFailed {
 		// allow a single retry, to hide fast-forwards
-		newState, newBallot, err = p.propose(ctx, key, f)
+		state, b, err = p.propose(ctx, key, f)
 	}
 
-	return newState, newBallot, err
+	return state, b, err
 }
 
-func (p *LocalProposer) propose(ctx context.Context, key string, f ChangeFunc) (state []byte, ballot Ballot, err error) {
+func (p *LocalProposer) propose(ctx context.Context, key string, f ChangeFunc) (state []byte, b Ballot, err error) {
 	// From the paper: "A client submits the change function to a proposer. The
 	// proposer generates a ballot number B, by incrementing the current ballot
 	// number's counter."
@@ -76,7 +76,7 @@ func (p *LocalProposer) propose(ctx context.Context, key string, f ChangeFunc) (
 	// rystsov: "I proved correctness for the case when each *attempt* has a
 	// unique ballot number. [Otherwise] I would bet that linearizability may be
 	// violated."
-	b := p.ballot.inc()
+	b = p.ballot.inc()
 
 	// Set up a logger, for debugging.
 	logger := level.Debug(log.With(p.logger, "method", "Propose", "key", key, "B", b))
