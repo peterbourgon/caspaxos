@@ -768,7 +768,7 @@ That seems easy enough.
  }
 ```
 
-And a function remove-if-empty from all acceptors.
+And a function to remove-if-empty from all acceptors.
 
 ```go
 func gcRemoveIfEmpty(key string, acceptors []Acceptor) error {
