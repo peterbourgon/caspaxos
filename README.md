@@ -1037,20 +1037,14 @@ node provisioning. Or, a CASPaxos operator could be written for Kubernetes. As
 always, carefully consider your operational requirements to determine which
 approach is best for your use-case.
 
-### Safety
+### API boundaries
 
 TODO
-
-### Fast delete, slow delete
-
-The paper suggests that a delete can be a change that writes an empty value, and
-that a garbage collection can be scheduled in the background to reclaim the
-space. This 
 
 ### Cluster membership
 
 TODO
 
-### Client interfaces
+### Fast delete, slow delete
 
 TODO
