@@ -10,7 +10,7 @@ import "fmt"
 // (counter, ID)."
 type Ballot struct {
 	Counter uint64
-	ID      uint64
+	ID      string
 }
 
 func (b *Ballot) inc() Ballot {
@@ -19,7 +19,7 @@ func (b *Ballot) inc() Ballot {
 }
 
 func (b *Ballot) isZero() bool {
-	return b.Counter == 0 && b.ID == 0
+	return b.Counter == 0 && b.ID == ""
 }
 
 // From the paper: "To compare ballot tuples, we should compare the first
@@ -35,5 +35,5 @@ func (b Ballot) String() string {
 	if b.isZero() {
 		return "ø"
 	}
-	return fmt.Sprintf("Counter:%d/ID:%d", b.Counter, b.ID)
+	return fmt.Sprintf("%d/%s", b.Counter, b.ID)
 }

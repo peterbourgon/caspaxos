@@ -58,7 +58,7 @@ First, let's start with the core types, and some behavioral contracts.
 ```go
 type Ballot struct { 
     Counter uint64
-    ID      uint64
+    ID      string
 }
 
 type State []byte // could be anything
@@ -473,7 +473,6 @@ type myAcceptor struct {
 ```
 
 Changing the method bodies is left as an exercise for the reader. 
-(The reader is free to cheat by inspecting this repo.)
 
 ### Configuration changes
 
@@ -631,213 +630,352 @@ assumptions may not be valid in your environment. Please think critically about
 your use case, and provide me feedback if you think I've got something wrong.
 I'll appreciate it, honest!
 
+### One-round trip optimization
+
+> Since the prepare phase doesn't depend on the change function, it's possible
+> to piggyback the next prepare message on the current accept message to reduce
+> the number of trips from two to one.
+>
+> In this case, a proposer caches the last written value, and the clients should
+> use that proposer to initiate the state transition to benefit from the
+> optimization.
+
+This optimization has two assumptions: that there is a steady stream of change
+requests for a single key, and that we will implement some kind of
+client/proposer key affinity. I think both of these assumptions are probably not
+valid for many use cases, and certainly not interesting to us at this stage in
+the implementation. Therefore I won't make this optimization.
+
 ### Deletes
 
 Here's the delete process outlined by the paper.
 
 #### Delete step 1
 
-> On a delete request, a system writes an empty value with regular F+1 "accept"
+> On a delete request, a system writes tombstone with regular F+1 "accept"
 > quorum, schedules a garbage collection, and confirms the request to a client.
 
-From this we learn that a delete begins by writing an empty value. Of course,
-this still occupies space in the acceptors. So now we go to reclaim that space
-with a garbage collection.
+From this we learn that a delete begins by writing a tombstone, which is an
+empty value. Of course, this still occupies space in the acceptors. So now we go
+to reclaim that space with a garbage collection.
 
 #### Delete step 2
 
 > The garbage collection operation (in the background)
 
-The paper stipulates the GC should occur in the background, outside of the
-client request path. That's fair, but to my mind it implies that some kind of
-resilience is necessary, to prevent GC request from being lost. I guess that
-means either persisting GC requests and re/loading them on process start; or,
-perhaps better, implementing them by some kind of continuous stateless process
-which is able to scan the keyspace and identify deleted keys that should be
-deleted _a priori_. 
+The paper stipulates the GC should occur in the background, presumably outside
+of the client request path. To my mind it implies that some kind of resilience
+is necessary, to prevent GC request from being lost. I guess that means either
+persisting GC requests and re/loading them on process start; or, perhaps better,
+implementing them by some kind of continuous stateless process which is able to
+scan the keyspace and identify deleted keys that should be deleted _a priori_. 
 
-For now, let's punt on these interesting questions, and instead bias toward
-correctness, by implementing GC synchronously, as part of the delete request. To
-the best of my knowledge, there's nothing in the description that _requires_ GC
-to occur asynchronously.
+For now, let's punt on these interesting questions, and just implement GC as a
+synchronous function taking the key and tombstone. Later, we can figure out how
+to call this function in the right context or circumstance.
 
 #### Delete step 2a
 
 > Replicates an empty value to all nodes by executing the identity transform
-> with 2F+1 quorum size. Reschedules itself if at least one node is down.
+> with max quorum size (2F+1).
 
-Here we have another application of the now-familiar gambit of performing an
-identity read, presumably to increment ballot numbers beyond the delete
-operation. What's interesting (and in some sense quite amusing) is that we need
-to do this against every node (meaning proposer) and should retry the whole
-operation if any node (proposer) is down. That's a very brute-force approach to
-GC, which is nice and practical — and probably amenable to batching.
-
-```go
-func gcBroadcastIdentity(key string, proposers []Proposer) error {
-    identity := func(x State) State { return x }
-    for _, p := range proposers {
-        if _, err := p.Propose(key, identity); err != nil {
-            return err
-        }
-    }
-    return nil
-}
-```
-
-#### Delete steps 2b, 2c
-
-> For each proposer, fast-forwards its counter to generate ballot numbers
-> greater than the tombstone's number.
->
-> Wait some time to make sure that all in-channel messages with lesser ballots
-> were delivered.
-
-This is quite interesting, and somewhat vague: what's a tombstone? What channel
-are we talking about? If we read further below, we get some hints.
-
-> The steps 2b and 2c are necessary to eliminate a situation when a register was
-> removed from F+1 acceptors, and they accepted [a] value with [a] lesser ballot
-> number than the ballot number of the empty value still stored on [the] other F
-> acceptors.
-
-This implies that tombstone is the ballot number (or, more specifically, the
-ballot number counter) of the identity read transform we've just executed. But
-we've presumably executed that transform via the normal proposer.Propose method,
-which doesn't return anything about its ballot number! So, assuming we don't
-want to create a new proposal mechanism for the delete process, it seems we'll
-need to make a modification to the Propose method, to return the resulting
-ballot number.
+Put another way: make a read proposal, except require a quorum of 100%. I think
+we can model this in one or two ways: either change the function signature of
+Propose to accept some parameter that dictates the desired quorum, or add a
+second method to the API for this step exclusively. I'll actually do a hybrid
+approach: make an unexported (private) propose method that parameterizes the
+quorum, change the existing propose method to call it, and add a new
+FullIdentityRead method for this use-case specifically.
 
 ```diff
  type Proposer interface {
--    Propose(f ChangeFunc) (new State, err error)
-+    Propose(f ChangeFunc) (new State, b Ballot, err error)
-
+     Propose(key string, f ChangeFunc) (new State, err error)
+ 
      AddAccepter(target Accepter) error
      AddPreparer(target Preparer) error
      RemovePreparer(target Preparer) error
      RemoveAccepter(target Accepter) error
+
++    FullIdentityRead(key string) (current State, err error)
  }
 ```
 
-Remember that we've sent multiple identity reads, to each proposer. That means
-we'll get a bunch of unique ballot numbers back. We can pick the tombstone as
-the greatest of those ballot numbers, and issue fast-forward requests with that
-value. 
+```go
+type quorumFunc func(n int) int
 
-```diff
--func gcBroadcastIdentity(key string, proposers []Proposer) error {
-+func gcBroadcastIdentity(key string, proposers []Proposer) (tombstone uint64, error) {
-     identity := func(x State) State { return x }
-+    var winning Ballot
-     for _, p := range proposers {
--        if _, err := p.Propose(key, identity); err != nil {
-+        _, b, err := p.Propose(key, identity)
-+        if err != nil {
--            return err
-+            return 0, err
-         }
-+        if b.greaterThan(winning) {
-+            winning = b
-+        }
-     }
--    return nil
-+    return winning.Counter, nil
- }
+var (
+	regularQuorum = func(n int) int { return (n / 2) + 1 } // i.e. F+1
+	fullQuorum    = func(n int) int { return n }           // i.e. 2F+1
+)
+
+func (p myProposer) propose(key string, f ChangeFunc, qf quorumFunc) (new State, err error) {
+    // ...
+}
+
+func (p myProposer) Propose(key string, f ChangeFunc) (new State, err error) {
+    return p.propose(key, f, regularQuorum)
+}
+
+func (p myProposer) FullIdentityRead(key string) (current State, err error) {
+    return p.propose(key, identityRead, fullQuorum)
+}
 ```
 
-Of course, we don't have a fast-forward method, either, yet.
+Now we can start to write our GC function.
+
+```go
+func GarbageCollect(key string, proposers []Proposer) error {
+    // 2a
+    proposer := proposers[rand.Intn(len(proposers))]
+    if _, err := proposer.FullIdentityRead(key); err != nil {
+        return err
+    }
+```
+
+#### Delete step 2b
+
+> Connects to each proposer, invalidates its cache associated with the removing
+> key (see one-round-trip optimization 2.2.1), fast-forwards its counter to be
+> greater than the tombstone's ballot number, and increments the proposer's age.
+
+There's a lot happening here. First, we'll ignore the bit about the cache,
+because [the referenced optimization][rto] isn't implemented. We see that we
+need to fast-forward the ballot number counter on proposers beyond the ballot
+number of the tombstone, which means we need to know what that number is. And
+we're introduced to a brand new concept, called the proposer's _age_. 
+
+[rto]: #one-round-trip-optimization
+
+In short, the age is essentially just another counter, like a ballot number,
+kept by the proposers and forwarded with each request to the acceptors. The
+acceptors check it, just like a ballot number, in order to potentially reject
+requests if they are too old.
+
+We start by adding a new method.
 
 ```diff
  type Proposer interface {
-     Propose(f ChangeFunc) (new State, b Ballot, err error)
-
+     Propose(key string, f ChangeFunc) (new State, err error)
+ 
      AddAccepter(target Accepter) error
      AddPreparer(target Preparer) error
      RemovePreparer(target Preparer) error
      RemoveAccepter(target Accepter) error
-+
-+    FastForward(tombstone uint64) error
+
+     FullIdentityRead(key string) (current State, err error)
++    FastForwardIncrement(key string, tombstone Ballot) error
  }
 ```
 
-Now we can write our fast-forward function.
+This method should fast-forward the ballot number counter and increment the age.
+Age is new state tracked in the proposer.
+
+```diff
+ type myProposer struct {
++    age       uint64     
+     ballot    Ballot
+     preparers []Preparer
+     accepters []Accepter
+ }
+```
+
+The implementation of that method is simple and left as an exercise. But now we
+can write step 2b in our GC function. Since this new method needs the ballot
+number counter from the tombstone, and we've decided that our GC function is
+called _after_ the tombstone write has already been made the client, we need to
+take that bit of information in as a parameter.
+
+```diff
+-func GarbageCollect(key string, proposers []Proposer) error {
++func GarbageCollect(key string, tombstone Ballot, proposers []Proposer) error {
+```
+
+Which we can now use.
 
 ```go
-func gcFastForward(tombstone uint64, proposers []Proposer) error {
-    for _, p := range proposers {
-        if err := p.FastForward(tombstone); err != nil {
+    // 2b
+    for _, proposer := range proposers {
+        if err := proposer.FastForwardIncrement(key, tombstone); err != nil {
             return err
         }
     }
-    return nil
-}
 ```
 
-As for waiting, I guess we can't make general guidance here. It seems like a
-second or two should be enough to clear any send and recv buffers, but different
-deployment environments may have radically different requirements. Without more
-specific guidance I think the best thing to do is to offer this as a parameter
-to the operator.
+#### Delete step 2c
 
-#### Delete step 2d
+> Connects to each acceptor and asks it to reject messages from proposers if
+> their age is younger than the corresponding age from the previous step.
 
-> For each acceptor, remove the register if its value is empty.
+Now we learn that acceptors need to track ages, too. But we have two problems:
+each proposer has _its own age_, and in the GC function we don't yet know what
+they are! I think this is an unintended consequence of an assumption by the
+author that we've implemented the round trip optimization, and that all requests
+for a given key will go through a single acceptor. That's not true for us.
 
-That seems easy enough.
+So I think we have to collect ages from proposers as an output of step 2b, and I
+think we have to pass them to acceptors in this step 2c.
+
+```diff
+ type Proposer interface {
+     Propose(key string, f ChangeFunc) (new State, err error)
+ 
+     AddAccepter(target Accepter) error
+     AddPreparer(target Preparer) error
+     RemovePreparer(target Preparer) error
+     RemoveAccepter(target Accepter) error
+
+     FullIdentityRead(key string) (current State, err error)
+-    FastForwardIncrement(key string, tombstone Ballot) error
++    FastForwardIncrement(key string, tombstone Ballot) (age uint64, err error)
+ }
+```
 
 ```diff
  type Acceptor interface {
-     Prepare(b Ballot) (s State, b Ballot, err error)
-     Accept(b Ballot, s State) (err error)
-+    RemoveIfEmpty() error
+     Preparer
+     Accepter
++    GarbageCollecter
+ }
+
++type GarbageCollecter interface {
++    RejectByAge(ages []uint64) error
++}
+```
+
+Observe that the rejection based on age has no connection to the key being
+garbage collected, the age is used as a means to establish causality between
+nodes independent of key. So RejectByAge doesn't take a key, just a set of ages.
+
+But this surfaces another problem. We're taking a set of ages, but we don't have
+a way to associate them to specific proposers, which we need to do. One way
+would be to pass a map of some proposer ID to its age. Another (I think better)
+way would be to define an age as a 2-tuple of the age counter and the
+corresponding proposer ID.
+
+```go
+type Age struct {
+    Counter uint64
+    ID      string
+}
+```
+
+Eagle-eyed observers will note this is basically a copy of the Ballot struct.
+Further optimizations based on that observation may be possible.
+For now, let's use what we have.
+
+```diff
+ type myProposer struct {
+-    age       uint64
++    age       Age
+     ballot    Ballot
+     preparers []Preparer
+     accepters []Accepter
+ }
+
+ type Proposer interface {
+     Propose(key string, f ChangeFunc) (new State, err error)
+ 
+     AddAccepter(target Accepter) error
+     AddPreparer(target Preparer) error
+     RemovePreparer(target Preparer) error
+     RemoveAccepter(target Accepter) error
+
+     FullIdentityRead(key string) (current State, err error)
+-    FastForwardIncrement(key string, tombstone Ballot) (age uint64, err error)
++    FastForwardIncrement(key string, tombstone Ballot) (age Age, err error)
+ }
+
+ type GarbageCollecter interface {
+-    RejectByAge(ages []uint64) error
++    RejectByAge(ages []Age) error
  }
 ```
 
-And a function to remove-if-empty from all acceptors.
+Modifying or implementing those functions is left as an exercise for the reader.
+Now we can modify the second step, and write the third step, in our GC function.
 
 ```go
-func gcRemoveIfEmpty(key string, acceptors []Acceptor) error {
-    for _, a := range acceptors {
-        if err := a.RemoveIfEmpty(key); err != nil {
+    // 2b
+    var ages []Age
+    for _, proposer := range proposers {
+        age, err := proposer.FastForwardIncrement(key, tombstone)
+        if err != nil {
+            return err
+        }
+        ages = append(ages, age)
+    }
+ 
+    // 2c
+    for _, acceptor := range acceptors {
+        if err := acceptor.RejectByAge(ages); err != nil {
             return err
         }
     }
+```
+
+#### Delete step 2d
+
+> For each acceptor, remove the register if its value is the tombstone
+> from the 2a step.
+
+This is straightforward, except for one thing: we haven't collected the value
+from step 2a yet!
+
+```diff
+     // 2a
+     proposer := proposers[rand.Intn(len(proposers))]
+-    if _, err := proposer.FullIdentityRead(key); err != nil {
++    killstate, err := proposer.FullIdentityRead(key)
++    if err != nil {
+         return err
+     }
+```
+
+Now we can define a new RemoveIfEqual method for the acceptors.
+
+```diff
+ type GarbageCollecter interface {
+     RejectByAge(ages []Age) error
++    RemoveIfEqual(key string, s State) error
+ }
+```
+
+And finish out our GC function.
+
+```go
+    // 2d
+    for _, acceptor := range acceptors {
+        if err := acceptor.RemoveIfEqual(key, killstate); err != nil {
+            return err
+        }
+    }
+
     return nil
 }
 ```
 
-Now we can write a naïve GarbageCollect function, taking a key that's already
-accepted a zero value.
+If this step fails, it means the key no longer has the tombstone (empty) value.
+That means someone came in and set the key to some other value before we could
+GC the space. And _that_ means we shouldn't try to GC anymore, as the value
+isn't deleted! This is probably worth signaling differently to the caller, in
+the form of a different type of error, so they can stop their retries.
 
-```go
-func GarbageCollect(key string, delay time.Duration, proposers []Proposer, acceptors []Acceptor) error {
-    for {
-        // (a)
-        tombstone, err := gcBroadcastIdentity(key, proposers)
-        if err != nil {
-            time.Sleep(time.Second) // or whatever
-            continue                // retry
-        }
+> Each step of the GC process is idempotent so if any acceptor or proposer is
+> down the process reschedules itself.
 
-        // (b)
-        if err := gcFastForward(tombstone, proposers); err != nil {
-            return err // an error at this stage is fatal
-        }
+This is a lovely property which means our GC function can _fail fast_ on any
+error, and the calling context can just retry until success. How nice.
 
-        // (c)
-        time.Sleep(delay)
+> Invalidation and the cache and age check are necessary to eliminate the lost
+> delete anomaly, a situation where a proposer with cached value, or a message
+> delayed by a channel, [will] overwrite the combstone without a causal link.
+> The update of the counters is necessary to avoid the lost update anomaly, a
+> situation when a concurrently-updated value has [a] lesser ballot number,
+> [and] a reader prioritizes the tombstone over the value.
 
-        // (d)
-        if err := gcRemoveIfEmpty(key, acceptors); err != nil {
-            return err
-        }
+Sure.
 
-        return nil
-    }
-}
-```
+—
 
 Observe that deletes are more like configuration changes than reads or writes
 (proposals), because the process requires specific access to all proposers and
@@ -875,10 +1013,6 @@ the user API, or a proxy for the user API, has to have access to the complete
 set of all nodes in the cluster. Put still another way, a proposer's Propose
 method is not a sufficient user API.
 
-### Optimizations
-
-TODO
-
 ## System implementation notes
 
 Production systems live and die on the basis of their operability. In the ideal
@@ -906,6 +1040,12 @@ approach is best for your use-case.
 ### Safety
 
 TODO
+
+### Fast delete, slow delete
+
+The paper suggests that a delete can be a change that writes an empty value, and
+that a garbage collection can be scheduled in the background to reclaim the
+space. This 
 
 ### Cluster membership
 

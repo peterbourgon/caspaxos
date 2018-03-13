@@ -26,21 +26,23 @@ var (
 	ErrNotFound = errors.New("not found")
 )
 
-// LocalProposer (from the paper) "performs the initialization by communicating
+// MemoryProposer (from the paper) "performs the initialization by communicating
 // with acceptors, and keep minimal state needed to generate unique increasing
 // update IDs (ballot numbers)."
-type LocalProposer struct {
+type MemoryProposer struct {
 	mtx       sync.Mutex
+	age       Age
 	ballot    Ballot
 	preparers map[string]Preparer
 	accepters map[string]Accepter
 	logger    log.Logger
 }
 
-// NewLocalProposer returns a usable Proposer uniquely identified by id.
+// NewMemoryProposer returns a usable Proposer uniquely identified by id.
 // It communicates with the initial set of acceptors.
-func NewLocalProposer(id uint64, logger log.Logger, initial ...Acceptor) *LocalProposer {
-	p := &LocalProposer{
+func NewMemoryProposer(id string, logger log.Logger, initial ...Acceptor) *MemoryProposer {
+	p := &MemoryProposer{
+		age:       Age{Counter: 0, ID: id},
 		ballot:    Ballot{Counter: 0, ID: id},
 		preparers: map[string]Preparer{},
 		accepters: map[string]Accepter{},
@@ -54,20 +56,28 @@ func NewLocalProposer(id uint64, logger log.Logger, initial ...Acceptor) *LocalP
 }
 
 // Propose a change from a client into the cluster.
-func (p *LocalProposer) Propose(ctx context.Context, key string, f ChangeFunc) (state []byte, b Ballot, err error) {
+func (p *MemoryProposer) Propose(ctx context.Context, key string, f ChangeFunc) (state []byte, b Ballot, err error) {
 	p.mtx.Lock()
 	defer p.mtx.Unlock()
 
-	state, b, err = p.propose(ctx, key, f)
+	state, b, err = p.propose(ctx, key, f, regularQuorum)
 	if err == ErrPrepareFailed {
 		// allow a single retry, to hide fast-forwards
-		state, b, err = p.propose(ctx, key, f)
+		state, b, err = p.propose(ctx, key, f, regularQuorum)
 	}
 
 	return state, b, err
 }
 
-func (p *LocalProposer) propose(ctx context.Context, key string, f ChangeFunc) (state []byte, b Ballot, err error) {
+// quorumFunc declares how many of n nodes are required.
+type quorumFunc func(n int) int
+
+var (
+	regularQuorum = func(n int) int { return (n / 2) + 1 } // i.e. F+1
+	fullQuorum    = func(n int) int { return n }           // i.e. 2F+1
+)
+
+func (p *MemoryProposer) propose(ctx context.Context, key string, f ChangeFunc, qf quorumFunc) (state []byte, b Ballot, err error) {
 	// From the paper: "A client submits the change function to a proposer. The
 	// proposer generates a ballot number B, by incrementing the current ballot
 	// number's counter."
@@ -103,7 +113,7 @@ func (p *LocalProposer) propose(ctx context.Context, key string, f ChangeFunc) (
 		logger.Log("broadcast_to", len(p.preparers))
 		for addr, target := range p.preparers {
 			go func(addr string, target Preparer) {
-				value, ballot, err := target.Prepare(ctx, key, b)
+				value, ballot, err := target.Prepare(ctx, key, p.age, b)
 				results <- result{addr, value, ballot, err}
 			}(addr, target)
 		}
@@ -113,7 +123,7 @@ func (p *LocalProposer) propose(ctx context.Context, key string, f ChangeFunc) (
 		// state as nil; otherwise, it picks the value of the tuple with the
 		// highest ballot number."
 		var (
-			quorum          = (len(p.preparers) / 2) + 1
+			quorum          = qf(len(p.preparers))
 			biggestConfirm  Ballot
 			biggestConflict Ballot
 		)
@@ -182,7 +192,7 @@ func (p *LocalProposer) propose(ctx context.Context, key string, f ChangeFunc) (
 		logger.Log("broadcast_to", len(p.accepters))
 		for addr, target := range p.accepters {
 			go func(addr string, target Accepter) {
-				err := target.Accept(ctx, key, b, newState)
+				err := target.Accept(ctx, key, p.age, b, newState)
 				results <- result{addr, err}
 			}(addr, target)
 		}
@@ -190,7 +200,7 @@ func (p *LocalProposer) propose(ctx context.Context, key string, f ChangeFunc) (
 		// From the paper: "The proposer waits for the F+1 confirmations."
 		// Observe that once we've got confirmation from a quorum of accepters,
 		// we ignore any subsequent messages.
-		quorum := (len(p.accepters) / 2) + 1
+		quorum := qf(len(p.accepters))
 		for i := 0; i < cap(results) && quorum > 0; i++ {
 			result := <-results
 			if result.err != nil {
@@ -218,7 +228,7 @@ func (p *LocalProposer) propose(ctx context.Context, key string, f ChangeFunc) (
 // AddAccepter adds the target acceptor to the pool of accepters used in the
 // second phase of proposals. It's the first step in growing the cluster, which
 // is a global process that needs to be orchestrated by an operator.
-func (p *LocalProposer) AddAccepter(target Acceptor) error {
+func (p *MemoryProposer) AddAccepter(target Acceptor) error {
 	p.mtx.Lock()
 	defer p.mtx.Unlock()
 	if _, ok := p.accepters[target.Address()]; ok {
@@ -231,7 +241,7 @@ func (p *LocalProposer) AddAccepter(target Acceptor) error {
 // AddPreparer adds the target acceptor to the pool of preparers used in the
 // first phase of proposals. It's the third step in growing the cluster, which
 // is a global process that needs to be orchestrated by an operator.
-func (p *LocalProposer) AddPreparer(target Acceptor) error {
+func (p *MemoryProposer) AddPreparer(target Acceptor) error {
 	p.mtx.Lock()
 	defer p.mtx.Unlock()
 	if _, ok := p.preparers[target.Address()]; ok {
@@ -244,7 +254,7 @@ func (p *LocalProposer) AddPreparer(target Acceptor) error {
 // RemovePreparer removes the target acceptor from the pool of preparers used in
 // the first phase of proposals. It's the first step in shrinking the cluster,
 // which is a global process that needs to be orchestrated by an operator.
-func (p *LocalProposer) RemovePreparer(target Acceptor) error {
+func (p *MemoryProposer) RemovePreparer(target Acceptor) error {
 	p.mtx.Lock()
 	defer p.mtx.Unlock()
 	if _, ok := p.preparers[target.Address()]; !ok {
@@ -257,7 +267,7 @@ func (p *LocalProposer) RemovePreparer(target Acceptor) error {
 // RemoveAccepter removes the target acceptor from the pool of accepters used in
 // the second phase of proposals. It's the third step in shrinking the cluster,
 // which is a global process that needs to be orchestrated by an operator.
-func (p *LocalProposer) RemoveAccepter(target Acceptor) error {
+func (p *MemoryProposer) RemoveAccepter(target Acceptor) error {
 	p.mtx.Lock()
 	defer p.mtx.Unlock()
 	if _, ok := p.accepters[target.Address()]; !ok {
@@ -267,13 +277,36 @@ func (p *LocalProposer) RemoveAccepter(target Acceptor) error {
 	return nil
 }
 
-// FastForward ensures that the ballot number's counter is larger than the
-// tombstone. It's used by the garbage collection process to delete keys.
-func (p *LocalProposer) FastForward(tombstone uint64) error {
+// FullIdentityRead performs an identity read on the given key with a quorum
+// size of 100%. It's used as part of the garbage collection process, to delete
+// keys.
+func (p *MemoryProposer) FullIdentityRead(ctx context.Context, key string) (state []byte, err error) {
+	identity := func(x []byte) []byte { return x }
+	state, _, err = p.propose(ctx, key, identity, fullQuorum)
+	if err == ErrPrepareFailed {
+		// allow a single retry, to hide fast-forwards
+		state, _, err = p.propose(ctx, key, identity, fullQuorum)
+	}
+	return state, err
+}
+
+// FastForwardIncrement performs part (2b) responsibilities of the GC process.
+func (p *MemoryProposer) FastForwardIncrement(ctx context.Context, key string, tombstone Ballot) (Age, error) {
+	// From the paper, this method should: "invalidate [the] cache associated
+	// with the key ... fast-forward [the ballot number] counter to guarantee
+	// that new ballot numbers are greater than the tombstone's ballot, and
+	// increments the proposer's age."
+
 	p.mtx.Lock()
 	defer p.mtx.Unlock()
-	if p.ballot.Counter < (tombstone + 1) {
-		p.ballot.Counter = (tombstone + 1)
+
+	// We have no cache associated with the key, because we don't implement the
+	// One-round trip optimization from 2.2.1. So all we have to do is update
+	// our counters. First, the ballot.
+	if p.ballot.Counter < (tombstone.Counter + 1) {
+		p.ballot.Counter = (tombstone.Counter + 1)
 	}
-	return nil
+
+	// Finally, our age.
+	return p.age.inc(), nil
 }

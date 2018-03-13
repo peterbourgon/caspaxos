@@ -11,6 +11,34 @@ import (
 	"github.com/go-kit/kit/log"
 )
 
+func TestReadUnwrittenKey(t *testing.T) {
+	// Build the cluster.
+	var (
+		logger = log.NewLogfmtLogger(testWriter{t})
+		a1     = NewMemoryAcceptor("1", log.With(logger, "a", 1))
+		a2     = NewMemoryAcceptor("2", log.With(logger, "a", 2))
+		a3     = NewMemoryAcceptor("3", log.With(logger, "a", 3))
+		p1     = NewMemoryProposer("1", log.With(logger, "p", 1), a1, a2, a3)
+		p2     = NewMemoryProposer("2", log.With(logger, "p", 2), a1, a2, a3)
+		p3     = NewMemoryProposer("3", log.With(logger, "p", 3), a1, a2, a3)
+		ctx    = context.Background()
+	)
+
+	// Reads on an unwritten key should succeed, with a nil state.
+	read := func(x []byte) []byte { return x }
+
+	// Test all proposers.
+	for _, p := range []*MemoryProposer{p1, p2, p3} {
+		state, _, err := p2.Propose(ctx, "any key", read)
+		if err != nil {
+			t.Fatalf("%s: read failed: %v", p.ballot.ID, err)
+		}
+		if want, have := []byte(nil), state; !bytes.Equal(want, have) {
+			t.Fatalf("%s: read: want %q, have %q", p.ballot.ID, want, have)
+		}
+	}
+}
+
 func TestInitializeOnlyOnce(t *testing.T) {
 	// Build the cluster.
 	var (
@@ -18,9 +46,9 @@ func TestInitializeOnlyOnce(t *testing.T) {
 		a1     = NewMemoryAcceptor("1", log.With(logger, "a", 1))
 		a2     = NewMemoryAcceptor("2", log.With(logger, "a", 2))
 		a3     = NewMemoryAcceptor("3", log.With(logger, "a", 3))
-		p1     = NewLocalProposer(1, log.With(logger, "p", 1), a1, a2, a3)
-		p2     = NewLocalProposer(2, log.With(logger, "p", 2), a1, a2, a3)
-		p3     = NewLocalProposer(3, log.With(logger, "p", 3), a1, a2, a3)
+		p1     = NewMemoryProposer("1", log.With(logger, "p", 1), a1, a2, a3)
+		p2     = NewMemoryProposer("2", log.With(logger, "p", 2), a1, a2, a3)
+		p3     = NewMemoryProposer("3", log.With(logger, "p", 3), a1, a2, a3)
 		ctx    = context.Background()
 	)
 
@@ -82,9 +110,9 @@ func TestFastForward(t *testing.T) {
 		a1     = NewMemoryAcceptor("1", log.With(logger, "a", 1))
 		a2     = NewMemoryAcceptor("2", log.With(logger, "a", 2))
 		a3     = NewMemoryAcceptor("3", log.With(logger, "a", 3))
-		p1     = NewLocalProposer(1, log.With(logger, "p", 1), a1, a2, a3)
-		p2     = NewLocalProposer(2, log.With(logger, "p", 2), a1, a2, a3)
-		p3     = NewLocalProposer(3, log.With(logger, "p", 3), a1, a2, a3)
+		p1     = NewMemoryProposer("1", log.With(logger, "p", 1), a1, a2, a3)
+		p2     = NewMemoryProposer("2", log.With(logger, "p", 2), a1, a2, a3)
+		p3     = NewMemoryProposer("3", log.With(logger, "p", 3), a1, a2, a3)
 		ctx    = context.Background()
 	)
 
@@ -95,7 +123,7 @@ func TestFastForward(t *testing.T) {
 	p1.Propose(ctx, key, changeFuncRead)                     // and again
 
 	// Make sure reads thru other proposers succeed.
-	for name, p := range map[string]*LocalProposer{
+	for name, p := range map[string]*MemoryProposer{
 		"p2": p2, "p3": p3,
 	} {
 		if val, _, err := p.Propose(ctx, key, changeFuncRead); err != nil {
@@ -113,9 +141,9 @@ func TestMultiKeyReads(t *testing.T) {
 		a1     = NewMemoryAcceptor("1", log.With(logger, "a", 1))
 		a2     = NewMemoryAcceptor("2", log.With(logger, "a", 2))
 		a3     = NewMemoryAcceptor("3", log.With(logger, "a", 3))
-		p1     = NewLocalProposer(1, log.With(logger, "p", 1), a1, a2, a3)
-		p2     = NewLocalProposer(2, log.With(logger, "p", 2), a1, a2, a3)
-		p3     = NewLocalProposer(3, log.With(logger, "p", 3), a1, a2, a3)
+		p1     = NewMemoryProposer("1", log.With(logger, "p", 1), a1, a2, a3)
+		p2     = NewMemoryProposer("2", log.With(logger, "p", 2), a1, a2, a3)
+		p3     = NewMemoryProposer("3", log.With(logger, "p", 3), a1, a2, a3)
 		ctx    = context.Background()
 	)
 
@@ -145,9 +173,9 @@ func TestConcurrentCASWrites(t *testing.T) {
 		a1     = NewMemoryAcceptor("1", log.With(logger, "a", 1))
 		a2     = NewMemoryAcceptor("2", log.With(logger, "a", 2))
 		a3     = NewMemoryAcceptor("3", log.With(logger, "a", 3))
-		p1     = NewLocalProposer(1, log.With(logger, "p", 1), a1, a2, a3)
-		p2     = NewLocalProposer(2, log.With(logger, "p", 2), a1, a2, a3)
-		p3     = NewLocalProposer(3, log.With(logger, "p", 3), a1, a2, a3)
+		p1     = NewMemoryProposer("1", log.With(logger, "p", 1), a1, a2, a3)
+		p2     = NewMemoryProposer("2", log.With(logger, "p", 2), a1, a2, a3)
+		p3     = NewMemoryProposer("3", log.With(logger, "p", 3), a1, a2, a3)
 		ctx    = context.Background()
 	)
 
@@ -233,6 +261,15 @@ func changeFuncInitializeOnlyOnce(s string) ChangeFunc {
 	return func(x []byte) []byte {
 		if x == nil {
 			return []byte(s)
+		}
+		return x
+	}
+}
+
+func changeFuncCompareAndSwap(prev, next string) ChangeFunc {
+	return func(x []byte) []byte {
+		if bytes.Equal(x, []byte(prev)) {
+			return []byte(next)
 		}
 		return x
 	}

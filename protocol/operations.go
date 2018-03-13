@@ -1,12 +1,11 @@
 package protocol
 
 import (
+	"bytes"
 	"context"
 	"math/rand"
-	"time"
 
 	"github.com/go-kit/kit/log"
-	"github.com/go-kit/kit/log/level"
 	"github.com/pkg/errors"
 )
 
@@ -22,8 +21,9 @@ type Proposer interface {
 	RemovePreparer(target Acceptor) error
 	RemoveAccepter(target Acceptor) error
 
-	// This method is for garbage collection, for deletes.
-	FastForward(tombstone uint64) error
+	// These methods are for garbage collection, for deletes.
+	FullIdentityRead(ctx context.Context, key string) (state []byte, err error)
+	FastForwardIncrement(ctx context.Context, key string, tombstone Ballot) (Age, error)
 }
 
 // Acceptor models a complete, uniquely-addressable acceptor.
@@ -35,7 +35,7 @@ type Acceptor interface {
 	Addresser
 	Preparer
 	Accepter
-	Remover
+	GarbageCollecter
 }
 
 // Addresser models something with a unique address.
@@ -45,17 +45,18 @@ type Addresser interface {
 
 // Preparer models the first-phase responsibilities of an acceptor.
 type Preparer interface {
-	Prepare(ctx context.Context, key string, b Ballot) (value []byte, current Ballot, err error)
+	Prepare(ctx context.Context, key string, age Age, b Ballot) (value []byte, current Ballot, err error)
 }
 
 // Accepter models the second-phase responsibilities of an acceptor.
 type Accepter interface {
-	Accept(ctx context.Context, key string, b Ballot, value []byte) error
+	Accept(ctx context.Context, key string, age Age, b Ballot, value []byte) error
 }
 
-// Remover models the garbage collection responsibilities of an acceptor.
-type Remover interface {
-	RemoveIfEmpty(ctx context.Context, key string) error
+// GarbageCollecter models the garbage collection responsibilities of an acceptor.
+type GarbageCollecter interface {
+	RejectByAge(ctx context.Context, ages []Age) error
+	RemoveIfEqual(ctx context.Context, key string, state []byte) error
 }
 
 // Assign special meaning to the zero/empty key "", which we use to increment
@@ -175,126 +176,110 @@ func ShrinkCluster(ctx context.Context, target Acceptor, proposers []Proposer) e
 	return nil
 }
 
+// Tombstone represents the terminal form of a key. Propose some state, likely
+// empty, and collect it with the resulting ballot into a Tombstone, which
+// becomes input to the garbage collection process.
+type Tombstone struct {
+	Ballot Ballot
+	State  []byte
+}
+
 // GarbageCollect removes an empty key as described in section 3.1 "How to
-// delete a record" in the paper. It will continue until the key is successfully
-// garbage collected, or the context is canceled.
-func GarbageCollect(ctx context.Context, key string, delay time.Duration, proposers []Proposer, acceptors []Acceptor, logger log.Logger) error {
-	// From the paper, this process: "(a) Replicates an empty value to all nodes
-	// by executing the identity transform with 2F+1 quorum size. Reschedules
-	// itself if at least one node is down."
-	for {
-		tombstone, err := gcBroadcastIdentity(ctx, key, proposers)
-		if err == context.Canceled {
-			return err // fatal
-		}
+// delete a record" in the paper. Any error is treated as fatal to this GC
+// attempt, and the caller should retry if IsRetryable(err) is true.
+func GarbageCollect(ctx context.Context, key string, t Tombstone, proposers []Proposer, acceptors []Acceptor, logger log.Logger) error {
+	// From the paper: "(a) Replicates an empty value to all nodes by
+	// executing the identity transform with max quorum size (2F+1)."
+	var killstate []byte
+	{
+		var (
+			proposer = proposers[rand.Intn(len(proposers))]
+			s, err   = proposer.FullIdentityRead(ctx, key)
+		)
 		if err != nil {
-			retry := time.Second // nonfatal
-			level.Debug(logger).Log("broadcast", "failed", "err", err, "retry_in", retry.String())
-			select {
-			case <-time.After(retry):
-				continue
-			case <-ctx.Done():
-				return ctx.Err()
+			return makeRetryable(errors.Wrap(err, "error executing identity transform"))
+		}
+		if !bytes.Equal(s, t.State) {
+			return notRetryable(errors.Wrap(err, "error comparing identity read: state conflicts with tombstone"))
+		}
+		killstate = s
+	}
+
+	// From the paper: "(b) Connects to each proposer, invalidates its cache
+	// associated with the removing key, ... fast-forwards its counter to
+	// guarantee that new ballot numbers are greater than the tombstone's
+	// ballot, and increments proposer's age."
+	var ages []Age
+	{
+		type result struct {
+			age Age
+			err error
+		}
+		results := make(chan result, len(proposers))
+		for _, proposer := range proposers {
+			go func(proposer Proposer) {
+				age, err := proposer.FastForwardIncrement(ctx, key, t.Ballot)
+				results <- result{age, err}
+			}(proposer)
+		}
+		for i := 0; i < cap(results); i++ {
+			result := <-results
+			if result.err != nil {
+				return makeRetryable(errors.Wrap(result.err, "error invalidating and incrementing proposer"))
+			}
+			ages = append(ages, result.age)
+		}
+	}
+
+	// From the paper: "(c) For each acceptor, asks to reject messages from
+	// proposers if their age is younger than the corresponding age from the
+	// previous step."
+	{
+		results := make(chan error, len(acceptors))
+		for _, acceptor := range acceptors {
+			go func(acceptor Acceptor) {
+				results <- acceptor.RejectByAge(ctx, ages)
+			}(acceptor)
+		}
+		for i := 0; i < cap(results); i++ {
+			if err := <-results; err != nil {
+				return makeRetryable(errors.Wrap(err, "error updating ages in acceptor"))
 			}
 		}
-
-		// From the paper: "(b) For each proposer, fast-forward its counter to
-		// generate ballot numbers greater than the tombstone's number."
-		if err := gcFastForward(ctx, tombstone, proposers); err != nil {
-			return err
-		}
-
-		// From the paper: "(c) Wait some time to make sure that all in-channel
-		// messages with lesser ballots were delivered."
-		time.Sleep(delay)
-
-		// From the paper: "(d) [Each] acceptor [should] remove the register if
-		// its value is empty."
-		if err := gcRemoveIfEmpty(ctx, key, acceptors); err != nil {
-			return err
-		}
-
-		// Done!
-		return nil
-	}
-}
-
-func gcBroadcastIdentity(ctx context.Context, key string, proposers []Proposer) (tombstone uint64, err error) {
-	// The identity read change function.
-	identity := func(x []byte) []byte { return x }
-
-	// Collect results in the results chan.
-	type result struct {
-		state  []byte
-		ballot Ballot
-		err    error
-	}
-	results := make(chan result, len(proposers))
-
-	// Broadcast to all proposers.
-	for _, p := range proposers {
-		go func(p Proposer) {
-			state, ballot, err := p.Propose(ctx, key, identity)
-			results <- result{state, ballot, err}
-		}(p)
 	}
 
-	// Wait for every result. Any error is a failure.
-	for i := 0; i < cap(results); i++ {
-		result := <-results
-		if result.err != nil {
-			return 0, result.err
+	// From the paper: "(d) For each acceptor, remove the register if its
+	// value is the tombstone from the 2a step."
+	{
+		results := make(chan error, len(acceptors))
+		for _, acceptor := range acceptors {
+			go func(acceptor Acceptor) {
+				results <- acceptor.RemoveIfEqual(ctx, key, killstate)
+			}(acceptor)
 		}
-		if len(result.state) != 0 {
-			return 0, ErrNotEmpty
-		}
-		if result.ballot.Counter > tombstone {
-			tombstone = result.ballot.Counter
+		for i := 0; i < cap(results); i++ {
+			if err := <-results; err != nil {
+				return notRetryable(errors.Wrap(err, "error removing value from acceptor"))
+			}
 		}
 	}
 
-	// The biggest of all the counters becomes the tombstone.
-	return tombstone, nil
-}
-
-func gcFastForward(ctx context.Context, tombstone uint64, proposers []Proposer) error {
-	// Collect results in the results chan.
-	results := make(chan error, len(proposers))
-
-	// Broadcast the fast-forward request.
-	for _, p := range proposers {
-		go func(p Proposer) {
-			results <- p.FastForward(tombstone)
-		}(p)
-	}
-
-	// Verify results.
-	for i := 0; i < cap(results); i++ {
-		if err := <-results; err != nil {
-			return err
-		}
-	}
-
-	// Good.
+	// Done!
 	return nil
 }
 
-func gcRemoveIfEmpty(ctx context.Context, key string, acceptors []Acceptor) error {
-	// Broadcast the remove-if-empty request.
-	results := make(chan error, len(acceptors))
-	for _, a := range acceptors {
-		go func(a Acceptor) {
-			results <- a.RemoveIfEmpty(ctx, key)
-		}(a)
-	}
-
-	// We need a quorum of 100%.
-	for i := 0; i < cap(results); i++ {
-		if err := <-results; err != nil {
-			return err // fatal
-		}
-	}
-
-	// Good.
-	return nil
+// IsRetryable indicates the error, received from the GarbageCollect function,
+// is non-terminal, and the client can retry the operation.
+func IsRetryable(err error) bool {
+	r, ok := err.(interface{ retryable() bool })
+	return ok && r.retryable()
 }
+
+type retryableError struct{ error }
+
+func (re retryableError) retryable() bool { return true }
+
+func makeRetryable(err error) error { return retryableError{err} }
+
+// notRetryable is a no-op, it just makes the GC function nicer to read.
+func notRetryable(err error) error { return err }

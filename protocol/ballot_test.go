@@ -7,11 +7,11 @@ import (
 func TestZeroBallotAlwaysLoses(t *testing.T) {
 	// We rely on this property in a few places.
 	for _, input := range []Ballot{
-		{Counter: 0, ID: 1},
-		{Counter: 1, ID: 0},
-		{Counter: 1, ID: 2},
-		{Counter: 2, ID: 1},
-		{Counter: 2, ID: 2},
+		{Counter: 0, ID: "a"},
+		{Counter: 1, ID: ""},
+		{Counter: 1, ID: "b"},
+		{Counter: 2, ID: "a"},
+		{Counter: 2, ID: "b"},
 	} {
 		t.Run(input.String(), func(t *testing.T) {
 			var zero Ballot
