@@ -655,9 +655,9 @@ Here's the delete process outlined by the paper.
 > On a delete request, a system writes tombstone with regular F+1 "accept"
 > quorum, schedules a garbage collection, and confirms the request to a client.
 
-From this we learn that a delete begins by writing a tombstone, which is an
-empty value. Of course, this still occupies space in the acceptors. So now we go
-to reclaim that space with a garbage collection.
+From this we learn that a delete begins by writing a tombstone, which is
+probably an empty value. Of course, this still occupies space in the acceptors.
+So now we go to reclaim that space with a garbage collection.
 
 #### Delete step 2
 
@@ -781,21 +781,38 @@ Age is new state tracked in the proposer.
 
 The implementation of that method is simple and left as an exercise. But now we
 can write step 2b in our GC function. Since this new method needs the ballot
-number counter from the tombstone, and we've decided that our GC function is
-called _after_ the tombstone write has already been made the client, we need to
-take that bit of information in as a parameter.
+number counter from the tombstone, we need to get that number somehow. Of
+course, in step 2a, we've already done a FullIdentityRead on the key, which we
+can easily modify to return the accepted ballot, too.
 
 ```diff
--func GarbageCollect(key string, proposers []Proposer) error {
-+func GarbageCollect(key string, tombstone Ballot, proposers []Proposer) error {
+ type Proposer interface {
+     Propose(key string, f ChangeFunc) (new State, err error)
+ 
+     AddAccepter(target Accepter) error
+     AddPreparer(target Preparer) error
+     RemovePreparer(target Preparer) error
+     RemoveAccepter(target Accepter) error
+
+-    FullIdentityRead(key string) (current State, err error)
++    FullIdentityRead(key string) (current State, b Ballot, err error)
+     FastForwardIncrement(key string, tombstone Ballot) error
+ }
 ```
 
-Which we can now use.
+Which we can now capture in step 2a, and use in step 2b.
 
 ```go
+    // 2a
+    proposer := proposers[rand.Intn(len(proposers))]
+    _, tombstone, err := proposer.FullIdentityRead(key)
+    if err != nil {
+        return err
+    }
+
     // 2b
     for _, proposer := range proposers {
-        if err := proposer.FastForwardIncrement(key, tombstone); err != nil {
+        if err = proposer.FastForwardIncrement(key, tombstone); err != nil {
             return err
         }
     }
@@ -824,7 +841,7 @@ think we have to pass them to acceptors in this step 2c.
      RemovePreparer(target Preparer) error
      RemoveAccepter(target Accepter) error
 
-     FullIdentityRead(key string) (current State, err error)
+     FullIdentityRead(key string) (current State, b Ballot, err error)
 -    FastForwardIncrement(key string, tombstone Ballot) error
 +    FastForwardIncrement(key string, tombstone Ballot) (age uint64, err error)
  }
@@ -880,7 +897,7 @@ For now, let's use what we have.
      RemovePreparer(target Preparer) error
      RemoveAccepter(target Accepter) error
 
-     FullIdentityRead(key string) (current State, err error)
+     FullIdentityRead(key string) (current State, b Ballot, err error)
 -    FastForwardIncrement(key string, tombstone Ballot) (age uint64, err error)
 +    FastForwardIncrement(key string, tombstone Ballot) (age Age, err error)
  }
@@ -924,9 +941,9 @@ from step 2a yet!
 ```diff
      // 2a
      proposer := proposers[rand.Intn(len(proposers))]
--    if _, err := proposer.FullIdentityRead(key); err != nil {
-+    killstate, err := proposer.FullIdentityRead(key)
-+    if err != nil {
+-    _, tombstone, err := proposer.FullIdentityRead(key)
++    killstate, tombstone, err := proposer.FullIdentityRead(key)
+     if err != nil {
          return err
      }
 ```
