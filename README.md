@@ -202,10 +202,10 @@ ballot.
 ```go
 func (a myAcceptor) Prepare(b Ballot) (current State, accepted Ballot, err error) {
     if a.promise.greaterThan(b) {
-        return nil, zeroballot, ErrConflict
+        return nil, a.promise, ErrConflict
     }
     if a.accepted.greaterThan(b) {
-        return nil, zeroballot, ErrConflict
+        return nil, a.accepted, ErrConflict
     }
 ```
 
