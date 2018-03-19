@@ -83,17 +83,16 @@ func TestConfigurationChange(t *testing.T) {
 func TestGarbageCollection(t *testing.T) {
 	// Build the cluster.
 	var (
-		logger  = log.NewLogfmtLogger(testWriter{t})
-		a1      = NewMemoryAcceptor("1", log.With(logger, "a", 1))
-		a2      = NewMemoryAcceptor("2", log.With(logger, "a", 2))
-		a3      = NewMemoryAcceptor("3", log.With(logger, "a", 3))
-		p1      = NewMemoryProposer("1", log.With(logger, "p", 1), a1, a2, a3)
-		p2      = NewMemoryProposer("2", log.With(logger, "p", 2), a1, a2, a3)
-		p3      = NewMemoryProposer("3", log.With(logger, "p", 3), a1, a2, a3)
-		ctx     = context.Background()
-		key     = "my key"
-		val0    = "initial value"
-		killval = "tombstone\n"
+		logger = log.NewLogfmtLogger(testWriter{t})
+		a1     = NewMemoryAcceptor("1", log.With(logger, "a", 1))
+		a2     = NewMemoryAcceptor("2", log.With(logger, "a", 2))
+		a3     = NewMemoryAcceptor("3", log.With(logger, "a", 3))
+		p1     = NewMemoryProposer("1", log.With(logger, "p", 1), a1, a2, a3)
+		p2     = NewMemoryProposer("2", log.With(logger, "p", 2), a1, a2, a3)
+		p3     = NewMemoryProposer("3", log.With(logger, "p", 3), a1, a2, a3)
+		ctx    = context.Background()
+		key    = "my key"
+		val0   = "initial value"
 	)
 
 	// Set up an initial value.
@@ -101,27 +100,18 @@ func TestGarbageCollection(t *testing.T) {
 		t.Fatalf("write initial value failed: %v", err)
 	}
 
-	// Delete the value by writing a tombstone.
-	state, ballot, err := p2.Propose(ctx, key, changeFuncCompareAndSwap(val0, killval))
-	if err != nil {
-		t.Fatalf("write tombstone failed: %v", err)
-	} else if !bytes.Equal(state, []byte(killval)) {
-		t.Fatalf("write tombstone failed: want %q, have %q", string(killval), string(state))
-	}
-
 	// Perform a GC.
 	var (
-		tombstone = Tombstone{Ballot: ballot, State: state}
 		proposers = []Proposer{p1, p2, p3}
 		acceptors = []Acceptor{a1, a2, a3}
 		gclogger  = log.With(logger, "op", "GC")
 	)
-	if err := GarbageCollect(ctx, key, tombstone, proposers, acceptors, gclogger); err != nil {
+	if err := GarbageCollect(ctx, key, proposers, acceptors, gclogger); err != nil {
 		t.Fatalf("GC failed: %v", err)
 	}
 
 	// Read should succeed, with a nil value.
-	state, _, err = p3.Propose(ctx, key, changeFuncRead)
+	state, _, err := p3.Propose(ctx, key, changeFuncRead)
 	if want, have := (error)(nil), err; want != have {
 		t.Fatalf("post-GC read: err: want %v, have %v", want, have)
 	}

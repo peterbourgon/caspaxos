@@ -1,7 +1,6 @@
 package protocol
 
 import (
-	"bytes"
 	"context"
 	"math/rand"
 
@@ -22,8 +21,8 @@ type Proposer interface {
 	RemoveAccepter(target Acceptor) error
 
 	// These methods are for garbage collection, for deletes.
-	FullIdentityRead(ctx context.Context, key string) (state []byte, err error)
-	FastForwardIncrement(ctx context.Context, key string, tombstone Ballot) (Age, error)
+	FullIdentityRead(ctx context.Context, key string) (state []byte, b Ballot, err error)
+	FastForwardIncrement(ctx context.Context, key string, b Ballot) (Age, error)
 }
 
 // Acceptor models a complete, uniquely-addressable acceptor.
@@ -184,25 +183,24 @@ type Tombstone struct {
 	State  []byte
 }
 
-// GarbageCollect removes an empty key as described in section 3.1 "How to
-// delete a record" in the paper. Any error is treated as fatal to this GC
-// attempt, and the caller should retry if IsRetryable(err) is true.
-func GarbageCollect(ctx context.Context, key string, t Tombstone, proposers []Proposer, acceptors []Acceptor, logger log.Logger) error {
+// GarbageCollect removes a key as described in section 3.1 "How to delete a
+// record" in the paper. Any error is treated as fatal to this GC attempt, and
+// the caller should retry if IsRetryable(err) is true.
+func GarbageCollect(ctx context.Context, key string, proposers []Proposer, acceptors []Acceptor, logger log.Logger) error {
 	// From the paper: "(a) Replicates an empty value to all nodes by
 	// executing the identity transform with max quorum size (2F+1)."
 	var killstate []byte
+	var tombstone Ballot
 	{
 		var (
-			proposer = proposers[rand.Intn(len(proposers))]
-			s, err   = proposer.FullIdentityRead(ctx, key)
+			proposer  = proposers[rand.Intn(len(proposers))]
+			s, b, err = proposer.FullIdentityRead(ctx, key)
 		)
 		if err != nil {
 			return makeRetryable(errors.Wrap(err, "error executing identity transform"))
 		}
-		if !bytes.Equal(s, t.State) {
-			return notRetryable(errors.Wrap(err, "error comparing identity read: state conflicts with tombstone"))
-		}
 		killstate = s
+		tombstone = b
 	}
 
 	// From the paper: "(b) Connects to each proposer, invalidates its cache
@@ -218,7 +216,7 @@ func GarbageCollect(ctx context.Context, key string, t Tombstone, proposers []Pr
 		results := make(chan result, len(proposers))
 		for _, proposer := range proposers {
 			go func(proposer Proposer) {
-				age, err := proposer.FastForwardIncrement(ctx, key, t.Ballot)
+				age, err := proposer.FastForwardIncrement(ctx, key, tombstone)
 				results <- result{age, err}
 			}(proposer)
 		}

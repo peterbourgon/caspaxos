@@ -280,18 +280,18 @@ func (p *MemoryProposer) RemoveAccepter(target Acceptor) error {
 // FullIdentityRead performs an identity read on the given key with a quorum
 // size of 100%. It's used as part of the garbage collection process, to delete
 // keys.
-func (p *MemoryProposer) FullIdentityRead(ctx context.Context, key string) (state []byte, err error) {
+func (p *MemoryProposer) FullIdentityRead(ctx context.Context, key string) (state []byte, b Ballot, err error) {
 	identity := func(x []byte) []byte { return x }
-	state, _, err = p.propose(ctx, key, identity, fullQuorum)
+	state, b, err = p.propose(ctx, key, identity, fullQuorum)
 	if err == ErrPrepareFailed {
 		// allow a single retry, to hide fast-forwards
-		state, _, err = p.propose(ctx, key, identity, fullQuorum)
+		state, b, err = p.propose(ctx, key, identity, fullQuorum)
 	}
-	return state, err
+	return state, b, err
 }
 
 // FastForwardIncrement performs part (2b) responsibilities of the GC process.
-func (p *MemoryProposer) FastForwardIncrement(ctx context.Context, key string, tombstone Ballot) (Age, error) {
+func (p *MemoryProposer) FastForwardIncrement(ctx context.Context, key string, b Ballot) (Age, error) {
 	// From the paper, this method should: "invalidate [the] cache associated
 	// with the key ... fast-forward [the ballot number] counter to guarantee
 	// that new ballot numbers are greater than the tombstone's ballot, and
@@ -302,11 +302,11 @@ func (p *MemoryProposer) FastForwardIncrement(ctx context.Context, key string, t
 
 	// We have no cache associated with the key, because we don't implement the
 	// One-round trip optimization from 2.2.1. So all we have to do is update
-	// our counters. First, the ballot.
-	if p.ballot.Counter < (tombstone.Counter + 1) {
-		p.ballot.Counter = (tombstone.Counter + 1)
+	// our counters. First, fast-forward the ballot.
+	if p.ballot.Counter < (b.Counter + 1) {
+		p.ballot.Counter = (b.Counter + 1)
 	}
 
-	// Finally, our age.
+	// Then, increment our age.
 	return p.age.inc(), nil
 }
