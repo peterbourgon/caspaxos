@@ -26,5 +26,5 @@ func (a Age) youngerThan(other Age) bool {
 }
 
 func (a Age) String() string {
-	return fmt.Sprintf("%s:%d", a.ID, a.Counter)
+	return fmt.Sprintf("%d:%s", a.Counter, a.ID)
 }

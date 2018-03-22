@@ -25,13 +25,13 @@ func TestConfigurationChange(t *testing.T) {
 
 	// Declare some verification functions.
 	growClusterWith := func(a Acceptor) {
-		if err := GrowCluster(ctx, a, []Proposer{p1, p2, p3}); err != nil {
+		if err := GrowCluster(ctx, a, []ConfigurationChanger{p1, p2, p3}); err != nil {
 			t.Fatalf("grow cluster with %q: %v", a.Address(), err)
 		}
 	}
 
 	shrinkClusterWith := func(a Acceptor) {
-		if err := ShrinkCluster(ctx, a, []Proposer{p1, p2, p3}); err != nil {
+		if err := ShrinkCluster(ctx, a, []ConfigurationChanger{p1, p2, p3}); err != nil {
 			t.Fatalf("shrink cluster with %q: %v", a.Address(), err)
 		}
 	}
@@ -102,8 +102,8 @@ func TestGarbageCollection(t *testing.T) {
 
 	// Perform a GC.
 	var (
-		proposers = []Proposer{p1, p2, p3}
-		acceptors = []Acceptor{a1, a2, a3}
+		proposers = []FastForwarder{p1, p2, p3}
+		acceptors = []RejectRemover{a1, a2, a3}
 		gclogger  = log.With(logger, "op", "GC")
 	)
 	if err := GarbageCollect(ctx, key, proposers, acceptors, gclogger); err != nil {

@@ -3,6 +3,7 @@ package protocol
 import (
 	"context"
 	"errors"
+	"sort"
 	"sync"
 
 	"github.com/go-kit/kit/log"
@@ -31,6 +32,7 @@ var (
 // update IDs (ballot numbers)."
 type MemoryProposer struct {
 	mtx       sync.Mutex
+	id        string
 	age       Age
 	ballot    Ballot
 	preparers map[string]Preparer
@@ -38,10 +40,11 @@ type MemoryProposer struct {
 	logger    log.Logger
 }
 
-// NewMemoryProposer returns a usable Proposer uniquely identified by id.
+// NewMemoryProposer returns a usable proposer uniquely identified by id.
 // It communicates with the initial set of acceptors.
 func NewMemoryProposer(id string, logger log.Logger, initial ...Acceptor) *MemoryProposer {
 	p := &MemoryProposer{
+		id:        id,
 		age:       Age{Counter: 0, ID: id},
 		ballot:    Ballot{Counter: 0, ID: id},
 		preparers: map[string]Preparer{},
@@ -53,6 +56,11 @@ func NewMemoryProposer(id string, logger log.Logger, initial ...Acceptor) *Memor
 		p.accepters[target.Address()] = target
 	}
 	return p
+}
+
+// Address of this proposer, which we interpret as the ID.
+func (p *MemoryProposer) Address() string {
+	return p.id
 }
 
 // Propose a change from a client into the cluster.
@@ -161,7 +169,10 @@ func (p *MemoryProposer) propose(ctx context.Context, key string, f ChangeFunc, 
 		// subsequent proposal might succeed. We could try to re-submit the same
 		// request with our updated ballot number, but for now let's leave that
 		// responsibility to the caller.
-		if quorum > 0 {
+		//
+		// As a special case, if we have zero preparers, allow the phase to
+		// pass. This allows us to grow the cluster from an empty state.
+		if len(p.preparers) > 0 && quorum > 0 {
 			logger.Log("result", "failed", "fast_forward_to", biggestConflict.Counter)
 			p.ballot.Counter = biggestConflict.Counter // fast-forward
 			return nil, b, ErrPrepareFailed
@@ -204,15 +215,17 @@ func (p *MemoryProposer) propose(ctx context.Context, key string, f ChangeFunc, 
 		for i := 0; i < cap(results) && quorum > 0; i++ {
 			result := <-results
 			if result.err != nil {
-				logger.Log("addr", result.addr, "result", "conflict", "err", err)
+				logger.Log("addr", result.addr, "result", "conflict", "err", result.err)
 			} else {
 				logger.Log("addr", result.addr, "result", "confirm")
 				quorum--
 			}
 		}
 
-		// If we don't get quorum, I guess we must fail the proposal.
-		if quorum > 0 {
+		// If we don't get quorum, I guess we must fail the proposal. Similarly
+		// to the first phase, make a special case when we don't have any
+		// accepters.
+		if len(p.accepters) > 0 && quorum > 0 {
 			logger.Log("result", "failed", "err", "not enough confirmations")
 			return nil, b, ErrAcceptFailed
 		}
@@ -223,6 +236,14 @@ func (p *MemoryProposer) propose(ctx context.Context, key string, f ChangeFunc, 
 
 	// Return the new state to the caller.
 	return newState, b, nil
+}
+
+// IdentityRead is an alias for propose with an identity change function. It's a
+// separate method to make implementing an e.g. HTTP proposer simpler;
+// serializing change functions is difficult.
+func (p *MemoryProposer) IdentityRead(ctx context.Context, key string) error {
+	_, _, err := p.Propose(ctx, key, func(x []byte) []byte { return x })
+	return err
 }
 
 // AddAccepter adds the target acceptor to the pool of accepters used in the
@@ -309,4 +330,34 @@ func (p *MemoryProposer) FastForwardIncrement(ctx context.Context, key string, b
 
 	// Then, increment our age.
 	return p.age.inc(), nil
+}
+
+// ListPreparers enumerates the prepare-stage acceptors that this proposer is
+// configured with.
+func (p *MemoryProposer) ListPreparers() (addrs []string, err error) {
+	p.mtx.Lock()
+	defer p.mtx.Unlock()
+
+	addrs = make([]string, 0, len(p.preparers))
+	for addr := range p.preparers {
+		addrs = append(addrs, addr)
+	}
+
+	sort.Strings(addrs)
+	return addrs, nil
+}
+
+// ListAccepters enumerates the accept-stage acceptors that this proposer is
+// configured with.
+func (p *MemoryProposer) ListAccepters() (addrs []string, err error) {
+	p.mtx.Lock()
+	defer p.mtx.Unlock()
+
+	addrs = make([]string, 0, len(p.accepters))
+	for addr := range p.accepters {
+		addrs = append(addrs, addr)
+	}
+
+	sort.Strings(addrs)
+	return addrs, nil
 }

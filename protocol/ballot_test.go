@@ -4,6 +4,13 @@ import (
 	"testing"
 )
 
+func TestZeroBallotString(t *testing.T) {
+	var zero Ballot
+	if want, have := "ø", zero.String(); want != have {
+		t.Errorf("want %q, have %q", want, have)
+	}
+}
+
 func TestZeroBallotAlwaysLoses(t *testing.T) {
 	// We rely on this property in a few places.
 	for _, input := range []Ballot{

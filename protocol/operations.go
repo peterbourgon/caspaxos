@@ -10,19 +10,34 @@ import (
 
 // Proposer models a concrete proposer.
 type Proposer interface {
-	// Propose is the primary API for clients. All changes including reads are
-	// sent this way.
+	Addresser
 	Propose(ctx context.Context, key string, f ChangeFunc) (state []byte, b Ballot, err error)
+	ConfigurationChanger
+	FastForwarder
+	AcceptorLister
+}
 
-	// These methods are for configuration changes.
+// ConfigurationChanger models the grow/shrink cluster responsibilities of a
+// proposer.
+type ConfigurationChanger interface {
+	IdentityRead(ctx context.Context, key string) error
 	AddAccepter(target Acceptor) error
 	AddPreparer(target Acceptor) error
 	RemovePreparer(target Acceptor) error
 	RemoveAccepter(target Acceptor) error
+}
 
-	// These methods are for garbage collection, for deletes.
+// FastForwarder models the garbage collection responsibilities of a proposer.
+type FastForwarder interface {
 	FullIdentityRead(ctx context.Context, key string) (state []byte, b Ballot, err error)
 	FastForwardIncrement(ctx context.Context, key string, b Ballot) (Age, error)
+}
+
+// AcceptorLister allows operators to introspect the state of proposers.
+// For debug and operational work, not necessary for the core protocol.
+type AcceptorLister interface {
+	ListPreparers() ([]string, error)
+	ListAccepters() ([]string, error)
 }
 
 // Acceptor models a complete, uniquely-addressable acceptor.
@@ -34,7 +49,7 @@ type Acceptor interface {
 	Addresser
 	Preparer
 	Accepter
-	GarbageCollecter
+	RejectRemover
 }
 
 // Addresser models something with a unique address.
@@ -52,15 +67,15 @@ type Accepter interface {
 	Accept(ctx context.Context, key string, age Age, b Ballot, value []byte) error
 }
 
-// GarbageCollecter models the garbage collection responsibilities of an acceptor.
-type GarbageCollecter interface {
+// RejectRemover models the garbage collection responsibilities of an acceptor.
+type RejectRemover interface {
 	RejectByAge(ctx context.Context, ages []Age) error
 	RemoveIfEqual(ctx context.Context, key string, state []byte) error
 }
 
-// Assign special meaning to the zero/empty key "", which we use to increment
-// ballot numbers for operations like changing cluster configuration.
-const zerokey = ""
+// Assign special meaning to one special key, which we use to increment ballot
+// numbers for operations like changing cluster configuration.
+const zerokey = "—"
 
 // Note: When growing (or shrinking) a cluster from an odd number of acceptors
 // to an even number of acceptors, the implemented process is required. But when
@@ -88,7 +103,7 @@ const zerokey = ""
 // depending on the cardinality of the node-set is fraught with peril.
 
 // GrowCluster adds the target acceptor to the cluster of proposers.
-func GrowCluster(ctx context.Context, target Acceptor, proposers []Proposer) error {
+func GrowCluster(ctx context.Context, target Acceptor, proposers []ConfigurationChanger) error {
 	// If we fail, try to leave the cluster in its original state.
 	var undo []func()
 	defer func() {
@@ -109,11 +124,8 @@ func GrowCluster(ctx context.Context, target Acceptor, proposers []Proposer) err
 
 	// From the paper: "Pick any proposer and execute the identity state
 	// transaction x -> x."
-	var (
-		proposer = proposers[rand.Intn(len(proposers))]
-		identity = func(x []byte) []byte { return x }
-	)
-	if _, _, err := proposer.Propose(ctx, zerokey, identity); err != nil {
+	proposer := proposers[rand.Intn(len(proposers))]
+	if err := proposer.IdentityRead(ctx, zerokey); err != nil {
 		return errors.Wrap(err, "during grow step 2 (identity read)")
 	}
 
@@ -133,7 +145,7 @@ func GrowCluster(ctx context.Context, target Acceptor, proposers []Proposer) err
 }
 
 // ShrinkCluster removes the target acceptor from the cluster of proposers.
-func ShrinkCluster(ctx context.Context, target Acceptor, proposers []Proposer) error {
+func ShrinkCluster(ctx context.Context, target Acceptor, proposers []ConfigurationChanger) error {
 	// If we fail, try to leave the cluster in its original state.
 	var undo []func()
 	defer func() {
@@ -154,11 +166,8 @@ func ShrinkCluster(ctx context.Context, target Acceptor, proposers []Proposer) e
 	}
 
 	// Execute a no-op read.
-	var (
-		identity = func(x []byte) []byte { return x }
-		proposer = proposers[rand.Intn(len(proposers))]
-	)
-	if _, _, err := proposer.Propose(ctx, zerokey, identity); err != nil {
+	proposer := proposers[rand.Intn(len(proposers))]
+	if err := proposer.IdentityRead(ctx, zerokey); err != nil {
 		return errors.Wrap(err, "during shrink step 2 (identity read)")
 	}
 
@@ -186,7 +195,7 @@ type Tombstone struct {
 // GarbageCollect removes a key as described in section 3.1 "How to delete a
 // record" in the paper. Any error is treated as fatal to this GC attempt, and
 // the caller should retry if IsRetryable(err) is true.
-func GarbageCollect(ctx context.Context, key string, proposers []Proposer, acceptors []Acceptor, logger log.Logger) error {
+func GarbageCollect(ctx context.Context, key string, proposers []FastForwarder, acceptors []RejectRemover, logger log.Logger) error {
 	// From the paper: "(a) Replicates an empty value to all nodes by
 	// executing the identity transform with max quorum size (2F+1)."
 	var killstate []byte
@@ -215,7 +224,7 @@ func GarbageCollect(ctx context.Context, key string, proposers []Proposer, accep
 		}
 		results := make(chan result, len(proposers))
 		for _, proposer := range proposers {
-			go func(proposer Proposer) {
+			go func(proposer FastForwarder) {
 				age, err := proposer.FastForwardIncrement(ctx, key, tombstone)
 				results <- result{age, err}
 			}(proposer)
@@ -235,7 +244,7 @@ func GarbageCollect(ctx context.Context, key string, proposers []Proposer, accep
 	{
 		results := make(chan error, len(acceptors))
 		for _, acceptor := range acceptors {
-			go func(acceptor Acceptor) {
+			go func(acceptor RejectRemover) {
 				results <- acceptor.RejectByAge(ctx, ages)
 			}(acceptor)
 		}
@@ -251,7 +260,7 @@ func GarbageCollect(ctx context.Context, key string, proposers []Proposer, accep
 	{
 		results := make(chan error, len(acceptors))
 		for _, acceptor := range acceptors {
-			go func(acceptor Acceptor) {
+			go func(acceptor RejectRemover) {
 				results <- acceptor.RemoveIfEqual(ctx, key, killstate)
 			}(acceptor)
 		}

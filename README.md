@@ -630,6 +630,16 @@ assumptions may not be valid in your environment. Please think critically about
 your use case, and provide me feedback if you think I've got something wrong.
 I'll appreciate it, honest!
 
+### Backfilling new acceptors
+
+When a new acceptor is added to the cluster, it will be empty. It will start
+servicing writes, so any keys written from that point forward will keep all of
+their quorum/safety guarantees. But to keep those guarantees for _previously_
+written keys, we should make sure the new acceptor has old data backfilled to it
+somehow. And we need to be careful about it: just dumping every key/value pair
+to it when it joins is a recipe for disaster. We discuss a safer strategy in the
+system design section.
+
 ### One-round trip optimization
 
 > Since the prepare phase doesn't depend on the change function, it's possible
@@ -1056,7 +1066,38 @@ approach is best for your use-case.
 
 ### API boundaries
 
-TODO
+```
+           +-------+                   +-----------+
+User------>| Users |------------------>| Proposers |
+           |       |   +-----------+   |           |   +-----------+
+           |       |-->| Operators |-->|           |-->| Acceptors | 
+           +-------+   |           |   +-----------+   |           |
+Operator-------------->|           |------------------>|           |
+                       +-----------+                   +-----------+
+```
+
+User API
+
+- Read: Read
+- Modify: CAS
+- Future: Watch
+
+Operator API
+
+- Configuration changes: GrowCluster, ShrinkCluster
+- GC: GarbageCollect
+
+Proposer API
+
+- Read: Read
+- Modify: CAS
+- Configuration changes: IdentityRead, AddAccepter, AddPreparer, RemovePreparer, RemoveAccepter
+- GC: FullIdentityRead, FastForwardIncrement
+
+Acceptor API
+
+- Mutations: Prepare, Accept
+- GC: RejectByAge, RemoveIfEqual
 
 ### Cluster membership
 

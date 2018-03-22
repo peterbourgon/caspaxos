@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io/ioutil"
 	"net"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -14,257 +13,120 @@ import (
 	"github.com/go-kit/kit/log/level"
 	"github.com/hashicorp/memberlist"
 	"github.com/pborman/uuid"
-	"github.com/pkg/errors"
 )
 
-// PeerConfig describes how to start up a peer in the cluster.
-type PeerConfig struct {
-	// The type of peer that we claim to be. An arbitrary string that can be
-	// queried-for.
-	//
-	// Required.
-	PeerType string
-
-	// The address we bind the listener for cluster communications. Hostname or
-	// IP address, not including port.
-	//
-	// Required.
-	BindHost string
-
-	// The port we bind the listener for cluster communications.
-	//
-	// Required.
-	BindPort int
-
-	// The address we advertise into the cluster, which we claim we can be
-	// reached on for cluster communications. Hostname or IP address, not
-	// including port.
-	//
-	// Optional. If not provided, we'll deduce something based on the bind
-	// address.
-	AdvertiseHost string
-
-	// The port we advertise into the cluster, which we claim we can be reached
-	// on for cluster communications.
-	//
-	// Optional. If not provided, we'll take the bind port.
-	AdvertisePort int
-
-	// It's assumed that all cluster peers run some kind of API which other
-	// peers want to talk to. This is the address that we claim that API can be
-	// reached on, as a hostname or IP address. It's combined with the APIPort
-	// and returned by queries.
-	//
-	// Optional. If not provided, we'll take the cluster advertise address.
-	APIHost string
-
-	// It's assumed that all cluster peers run some kind of API which other
-	// peers want to talk to. This is the port that we claim that API can be
-	// reached on. It's combined with the APIAddr and returned by queries.
-	//
-	// Required.
-	APIPort int
-
-	// A set of host:port strings of other peers in the cluster. We'll use this
-	// to seed our initial discovery.
-	//
-	// Technically optional, but if you don't provide at least one initial peer,
-	// you'll be forever alone.
-	InitialPeers []string
-
-	// Callback is invoked whenever the cluster membership changes, with the
-	// peers that have just joined, have just left, and currently comprise the
-	// cluster. Peers are grouped by peer type, and identified by their API host
-	// and port.
-	//
-	// Optional.
-	Callback func(joins, leaves, current map[string][]string)
-
-	// Cluster state changes and other diagnostic information is sent via this
-	// logger, including notification of several conditions that will prevent
-	// the cluster from working as expected.
-	//
-	// Optional (but recommended).
-	Logger log.Logger
+// Config for our node in the cluster.
+// All fields are mandatory unless otherwise noted.
+type Config struct {
+	ClusterHost   string
+	ClusterPort   int
+	AdvertiseHost string // optional; by default, ClusterHost is used
+	AdvertisePort int    // optional; by default, ClusterPort is used
+	APIHost       string
+	APIPort       int
+	Type          string
+	InitialPeers  []string
+	Logger        log.Logger
 }
 
-// Peer represents this node in the cluster. It's essentially an opinionated and
-// simplified wrapper around memberlist.
+func (c *Config) normalize() {
+	if c.Logger == nil {
+		c.Logger = log.NewNopLogger()
+	}
+}
+
+// Peer models a node in the cluster.
 type Peer struct {
 	ml *memberlist.Memberlist
 	d  *delegate
 }
 
-// NewPeer constructs a peer in a cluster. The returned peer is already running;
-// callers should be sure to call Leave, at some point.
-func NewPeer(config PeerConfig) (*Peer, error) {
-	// Validate config.
-	if config.PeerType == "" {
-		return nil, errors.New("must provide PeerType")
-	}
-	if config.BindHost == "" {
-		return nil, errors.New("must provide BindHost")
-	}
-	if config.BindPort == 0 {
-		return nil, errors.New("must provide BindPort")
-	}
-	if config.AdvertiseHost == "" {
-		// leave it blank, as we force it to an IP later
-	}
-	if config.AdvertisePort == 0 {
-		config.AdvertisePort = config.BindPort
-	}
-	if config.APIHost == "" {
-		// leave it blank, take AdvertiseHost (forced advertiseIP) later
-	}
-	if config.APIPort == 0 {
-		return nil, errors.New("must provide APIPort")
-	}
-	if config.Logger == nil {
-		config.Logger = log.NewNopLogger()
-	}
-
-	// It's best if AdvertiseHost is an IP.
-	advertiseIP, err := calculateAdvertiseIP(config.BindHost, config.AdvertiseHost, net.DefaultResolver, config.Logger)
-	if err != nil {
-		return nil, errors.Wrap(err, "couldn't deduce an advertise IP")
-	}
-	if hasNonlocal(config.InitialPeers) && isUnroutable(advertiseIP.String()) {
-		level.Warn(config.Logger).Log("err", "this node advertises itself on an unroutable IP", "ip", advertiseIP.String())
-		level.Warn(config.Logger).Log("err", "this node will be unreachable in the cluster")
-		level.Warn(config.Logger).Log("err", "provide an explicit advertise address as a routable IP address or hostname")
-	}
-
-	// Take the advertise IP.
-	config.AdvertiseHost = advertiseIP.String()
-
-	// And set the APIHost default, if necessary.
-	if config.APIHost == "" {
-		config.APIHost = config.AdvertiseHost
-	}
-
-	// Create a memberlist delegate.
-	d := newDelegate(config.Callback, config.Logger)
-	mlconfig := memberlist.DefaultLANConfig()
+// NewPeer joins the cluster. Don't forget to leave it, at some point.
+func NewPeer(config Config) (*Peer, error) {
+	var (
+		d = newDelegate(config.Logger)
+		c = memberlist.DefaultLANConfig()
+	)
 	{
-		mlconfig.Name = uuid.New()
-		mlconfig.BindAddr = config.BindHost
-		mlconfig.BindPort = config.BindPort
-		if config.AdvertiseHost != "" {
-			level.Debug(config.Logger).Log("advertise_host", config.AdvertiseHost, "advertise_port", config.AdvertisePort)
-			mlconfig.AdvertiseAddr = config.AdvertiseHost
-			mlconfig.AdvertisePort = config.AdvertisePort
-		}
-		mlconfig.LogOutput = ioutil.Discard
-		mlconfig.Delegate = d
-		mlconfig.Events = d
+		c.Name = uuid.New()
+		c.BindAddr = config.ClusterHost
+		c.BindPort = config.ClusterPort
+		c.AdvertiseAddr = config.AdvertiseHost
+		c.AdvertisePort = config.AdvertisePort
+		c.LogOutput = ioutil.Discard
+		c.Delegate = d
+		c.Events = d
 	}
-	ml, err := memberlist.Create(mlconfig)
+
+	ml, err := memberlist.Create(c)
 	if err != nil {
 		return nil, err
 	}
 
-	// Initialize the delegate and join up with the memberlist.
-	d.init(mlconfig.Name, config.PeerType, ml.LocalNode().Addr.String(), config.APIPort, ml.NumMembers)
+	d.initialize(c.Name, config.Type, config.APIHost, config.APIPort, ml.NumMembers)
 	n, _ := ml.Join(config.InitialPeers)
 	level.Debug(config.Logger).Log("Join", n)
-	if len(config.InitialPeers) > 0 {
-		go warnIfAlone(ml, config.Logger, 5*time.Second)
-	}
 
-	// Return the usable peer.
 	return &Peer{
 		ml: ml,
 		d:  d,
 	}, nil
 }
 
-func warnIfAlone(ml *memberlist.Memberlist, logger log.Logger, d time.Duration) {
-	for range time.Tick(d) {
-		if n := ml.NumMembers(); n <= 1 {
-			level.Warn(logger).Log("NumMembers", n, "msg", "I appear to be alone in the cluster")
-		}
-	}
-}
-
-// Leave the cluster, waiting up to timeout.
+// Leave the cluster, waiting up to timeout for a confirmation.
 func (p *Peer) Leave(timeout time.Duration) error {
 	return p.ml.Leave(timeout)
 }
 
-// Query for API host:port strings. Match peer types passing the given function.
-func (p *Peer) Query(f func(peerType string) bool) []string {
-	return p.d.query(f)
-}
-
-// Name (unique ID) of this peer in the cluster.
-func (p *Peer) Name() string {
-	return p.ml.LocalNode().Name
-}
-
-// ClusterSize returns the total size of the cluster, from this peer's perspective.
-func (p *Peer) ClusterSize() int {
-	return p.ml.NumMembers()
-}
-
-// State returns a JSON-serializable dump of cluster state.
-// Useful for debug.
-func (p *Peer) State() map[string]interface{} {
-	return map[string]interface{}{
-		"self":     p.ml.LocalNode(),
-		"members":  p.ml.Members(),
-		"n":        p.ml.NumMembers(),
-		"delegate": p.d.state(),
+// Query for other peers in the cluster whose type passes the function f.
+// Results are returned as matching API host:port pairs.
+func (p *Peer) Query(f func(peerType string) bool) (apiHostPorts []string) {
+	for _, v := range p.d.query(f) {
+		apiHostPort := net.JoinHostPort(v.APIHost, fmt.Sprint(v.APIPort))
+		apiHostPorts = append(apiHostPorts, apiHostPort)
 	}
+	return apiHostPorts
 }
 
-// delegate manages gossiped data: the set of peers, their type, and API port.
-// Clients must invoke init before the delegate can be used.
-// Inspired by https://github.com/asim/memberlist/blob/master/memberlist.go
+//
+//
+//
+
 type delegate struct {
-	mtx      sync.RWMutex
-	bcast    *memberlist.TransmitLimitedQueue
-	data     map[string]peerInfo
-	callback callbackFunc
-	logger   log.Logger
+	mtx    sync.RWMutex
+	bcast  *memberlist.TransmitLimitedQueue
+	data   map[string]peerInfo
+	logger log.Logger
 }
 
 type peerInfo struct {
 	Type    string `json:"type"`
-	APIAddr string `json:"api_addr"`
+	APIHost string `json:"api_host"`
 	APIPort int    `json:"api_port"`
 }
 
-type callbackFunc func(joins, leaves, current map[string][]string)
-
-func newDelegate(callback callbackFunc, logger log.Logger) *delegate {
+func newDelegate(logger log.Logger) *delegate {
 	return &delegate{
-		bcast:    nil,
-		data:     map[string]peerInfo{},
-		callback: callback,
-		logger:   logger,
+		data:   map[string]peerInfo{},
+		logger: logger,
 	}
 }
 
-func (d *delegate) init(myName string, peerType string, apiAddr string, apiPort int, numNodes func() int) {
+func (d *delegate) initialize(id string, peerType string, apiHost string, apiPort int, numNodes func() int) {
 	d.mtx.Lock()
 	defer d.mtx.Unlock()
-
-	// As far as I can tell, it is only luck which ensures the d.bcast isn't
-	// used (via GetBroadcasts) before we have a chance to create it here. But I
-	// don't see a way to wire up the components (in NewPeer) that doesn't
-	// involve this roundabout sort of initialization. Shrug!
 	d.bcast = &memberlist.TransmitLimitedQueue{
 		NumNodes:       numNodes,
 		RetransmitMult: 3,
 	}
-	d.data[myName] = peerInfo{peerType, apiAddr, apiPort}
+	d.data[id] = peerInfo{peerType, apiHost, apiPort}
 }
 
-func (d *delegate) query(pass func(string) bool) (res []string) {
-	for _, info := range d.state() {
-		if pass(info.Type) {
-			res = append(res, net.JoinHostPort(info.APIAddr, strconv.Itoa(info.APIPort)))
+func (d *delegate) query(f func(peerType string) bool) map[string]peerInfo {
+	res := map[string]peerInfo{}
+	for k, info := range d.state() {
+		if f(info.Type) {
+			res[k] = info
 		}
 	}
 	return res
@@ -336,10 +198,7 @@ func (d *delegate) GetBroadcasts(overhead, limit int) [][]byte {
 func (d *delegate) LocalState(join bool) []byte {
 	d.mtx.RLock()
 	defer d.mtx.RUnlock()
-	buf, err := json.Marshal(d.data)
-	if err != nil {
-		panic(err)
-	}
+	buf, _ := json.Marshal(d.data)
 	return buf
 }
 
@@ -370,18 +229,6 @@ func (d *delegate) MergeRemoteState(buf []byte, join bool) {
 // Implements memberlist.EventDelegate.
 func (d *delegate) NotifyJoin(n *memberlist.Node) {
 	level.Debug(d.logger).Log("received", "NotifyJoin", "node", n.Name, "addr", fmt.Sprintf("%s:%d", n.Addr, n.Port))
-	if d.callback != nil {
-		d.mtx.Lock()
-		defer d.mtx.Unlock()
-		var (
-			info     = d.data[n.Name]
-			hostport = net.JoinHostPort(info.APIAddr, strconv.Itoa(info.APIPort))
-			joins    = map[string][]string{info.Type: []string{hostport}}
-			leaves   = map[string][]string{}
-			current  = byType(d.data)
-		)
-		d.callback(joins, leaves, current)
-	}
 }
 
 // NotifyUpdate is invoked when a node is detected to have updated, usually
@@ -389,16 +236,6 @@ func (d *delegate) NotifyJoin(n *memberlist.Node) {
 // Implements memberlist.EventDelegate.
 func (d *delegate) NotifyUpdate(n *memberlist.Node) {
 	level.Debug(d.logger).Log("received", "NotifyUpdate", "node", n.Name, "addr", fmt.Sprintf("%s:%d", n.Addr, n.Port))
-	if d.callback != nil {
-		d.mtx.Lock()
-		defer d.mtx.Unlock()
-		var (
-			joins   = map[string][]string{}
-			leaves  = map[string][]string{}
-			current = byType(d.data)
-		)
-		d.callback(joins, leaves, current)
-	}
 }
 
 // NotifyLeave is invoked when a node is detected to have left.
@@ -408,24 +245,5 @@ func (d *delegate) NotifyLeave(n *memberlist.Node) {
 	level.Debug(d.logger).Log("received", "NotifyLeave", "node", n.Name, "addr", fmt.Sprintf("%s:%d", n.Addr, n.Port))
 	d.mtx.Lock()
 	defer d.mtx.Unlock()
-	if d.callback != nil {
-		var (
-			info     = d.data[n.Name]
-			hostport = net.JoinHostPort(info.APIAddr, strconv.Itoa(info.APIPort))
-			joins    = map[string][]string{}
-			leaves   = map[string][]string{info.Type: []string{hostport}}
-			current  = byType(d.data)
-		)
-		d.callback(joins, leaves, current)
-	}
 	delete(d.data, n.Name)
-}
-
-func byType(data map[string]peerInfo) map[string][]string {
-	current := map[string][]string{}
-	for _, info := range data {
-		hostport := net.JoinHostPort(info.APIAddr, strconv.Itoa(info.APIPort))
-		current[info.Type] = append(current[info.Type], hostport)
-	}
-	return current
 }

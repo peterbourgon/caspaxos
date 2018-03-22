@@ -1,3 +1,2 @@
-// Package cluster provides an elastic peer discovery and gossip layer.
-// All peer types join the same cluster, and can find out about each other.
+// Package cluster implements a gossip-based cluster based on HashiCorp memberlist.
 package cluster
