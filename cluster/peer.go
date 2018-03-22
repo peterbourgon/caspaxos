@@ -29,12 +29,6 @@ type Config struct {
 	Logger        log.Logger
 }
 
-func (c *Config) normalize() {
-	if c.Logger == nil {
-		c.Logger = log.NewNopLogger()
-	}
-}
-
 // Peer models a node in the cluster.
 type Peer struct {
 	ml *memberlist.Memberlist
