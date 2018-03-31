@@ -15,6 +15,7 @@ import (
 const (
 	PeerTypeAcceptor     = "acceptor"
 	PeerTypeProposer     = "proposer"
+	PeerTypeOperator     = "operator"
 	PeerTypeOperatorNode = "operator-node"
 	PeerTypeUserNode     = "user-node"
 )
@@ -51,6 +52,19 @@ func (p Peer) Proposers(ctx context.Context) ([]extension.Proposer, error) {
 		proposers[i] = httpapi.ProposerClient{URL: u}             // TODO(pb): HTTP client
 	}
 	return proposers, nil
+}
+
+// Operators implements extension.Cluster.
+func (p Peer) Operators(ctx context.Context) ([]extension.Operator, error) {
+	var (
+		hostports = p.Query(func(peerType string) bool { return strings.Contains(peerType, PeerTypeOperator) })
+		operators = make([]extension.Operator, len(hostports))
+	)
+	for i := range hostports {
+		u, _ := url.Parse(fmt.Sprintf("http://%s", hostports[i])) // TODO(pb): scheme
+		operators[i] = httpapi.OperatorClient{URL: u}             // TODO(pb): HTTP client
+	}
+	return operators, nil
 }
 
 // OperatorNodes implements extension.Cluster.
