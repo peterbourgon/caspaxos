@@ -2,13 +2,14 @@ package eventsource_test
 
 import (
 	"fmt"
-	"github.com/bernerdschaefer/eventsource"
 	"io"
 	"log"
 	"net/http"
 	"os"
 	"strings"
 	"time"
+
+	"github.com/peterbourgon/caspaxos/internal/eventsource"
 )
 
 func ExampleHandler() {
