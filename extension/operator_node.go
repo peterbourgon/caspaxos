@@ -32,13 +32,9 @@ type ProposerState struct {
 	Accepters []string `json:"accepters"`
 }
 
-// Cluster models the functionality that an operator needs from a cluster.
-type Cluster interface {
-	Acceptors(context.Context) ([]Acceptor, error)
-	Proposers(context.Context) ([]Proposer, error)
-	OperatorNodes(context.Context) ([]OperatorNode, error)
-	UserNodes(context.Context) ([]UserNode, error)
-}
+//
+//
+//
 
 // ClusterOperator provides OperatorNode methods over a cluster.
 type ClusterOperator struct {

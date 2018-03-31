@@ -4,13 +4,11 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"encoding/binary"
 	"errors"
 	"fmt"
 	"io/ioutil"
 	"net/http"
 	"net/url"
-	"strconv"
 	"strings"
 
 	"github.com/gorilla/mux"
@@ -19,8 +17,8 @@ import (
 	"github.com/peterbourgon/caspaxos/protocol"
 )
 
-// ProposerServer provides an HTTP interface to a proposer.
-// It has a pretty restricted proposal API.
+// ProposerServer wraps a core protocol.Proposer, but
+// provides the extension.Proposer methodset over HTTP.
 type ProposerServer struct {
 	proposer protocol.Proposer
 	*mux.Router
@@ -47,6 +45,7 @@ func NewProposerServer(proposer protocol.Proposer) *ProposerServer {
 		r.Methods("POST").Path("/fast-forward-increment/{key}").HandlerFunc(ps.handleFastForwardIncrement)
 		r.Methods("GET").Path("/list-preparers").HandlerFunc(ps.handleListPreparers)
 		r.Methods("GET").Path("/list-accepters").HandlerFunc(ps.handleListAccepters)
+		r.Methods("POST").Path("/watch/{key}").HandlerFunc(ps.handleWatch)
 	}
 	ps.Router = r
 	return ps
@@ -91,7 +90,7 @@ func (ps *ProposerServer) handleCAS(w http.ResponseWriter, r *http.Request) {
 
 	state, _, err := ps.proposer.Propose(r.Context(), key, cas)
 	if _, ok := err.(protocol.ConflictError); ok {
-		http.Error(w, err.Error(), http.StatusPreconditionFailed)
+		http.Error(w, err.Error(), http.StatusPreconditionFailed) // ConflictError -> 412 (CASError)
 		return
 	}
 	if err != nil {
@@ -226,6 +225,10 @@ func (ps *ProposerServer) handleListAccepters(w http.ResponseWriter, r *http.Req
 	}
 }
 
+func (ps *ProposerServer) handleWatch(w http.ResponseWriter, r *http.Request) {
+	http.Error(w, "ProposerServer handleWatch not yet implemented", http.StatusNotImplemented)
+}
+
 //
 //
 //
@@ -284,7 +287,11 @@ func (pc ProposerClient) CAS(ctx context.Context, key string, currentVersion uin
 		return version, value, err
 	}
 
-	if resp.StatusCode != http.StatusOK {
+	switch {
+	case resp.StatusCode == http.StatusPreconditionFailed: // 412 -> CASError
+		buf, _ := ioutil.ReadAll(resp.Body)
+		return version, value, extension.CASError{Err: errors.New(strings.TrimSpace(string(buf)))}
+	case resp.StatusCode != http.StatusOK:
 		buf, _ := ioutil.ReadAll(resp.Body)
 		return version, value, errors.New(strings.TrimSpace(string(buf)))
 	}
@@ -431,32 +438,4 @@ func (pc ProposerClient) httpClient() interface {
 		client = http.DefaultClient
 	}
 	return client
-}
-
-func makeVersionValue(version uint64, value []byte) (state []byte) {
-	state = make([]byte, 8+len(value))
-	binary.LittleEndian.PutUint64(state[:8], version)
-	copy(state[8:], value)
-	return state
-}
-
-func parseVersionValue(state []byte) (version uint64, value []byte, err error) {
-	if len(state) == 0 {
-		return version, value, nil
-	}
-	if len(state) < 8 {
-		return version, value, errors.New("state slice is too small")
-	}
-	version = binary.LittleEndian.Uint64(state[:8])
-	value = state[8:]
-	return version, value, nil
-}
-
-func setVersion(h http.Header, version uint64) {
-	h.Set(versionHeaderKey, fmt.Sprint(version))
-}
-
-func getVersion(h http.Header) uint64 {
-	version, _ := strconv.ParseUint(h.Get(versionHeaderKey), 10, 64)
-	return version
 }

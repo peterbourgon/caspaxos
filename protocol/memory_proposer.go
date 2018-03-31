@@ -3,6 +3,7 @@ package protocol
 import (
 	"context"
 	"errors"
+	"math/rand"
 	"sort"
 	"sync"
 
@@ -37,6 +38,7 @@ type MemoryProposer struct {
 	ballot    Ballot
 	preparers map[string]Preparer
 	accepters map[string]Accepter
+	watchers  map[string]StateWatcher
 	logger    log.Logger
 }
 
@@ -49,11 +51,13 @@ func NewMemoryProposer(id string, logger log.Logger, initial ...Acceptor) *Memor
 		ballot:    Ballot{Counter: 0, ID: id},
 		preparers: map[string]Preparer{},
 		accepters: map[string]Accepter{},
+		watchers:  map[string]StateWatcher{},
 		logger:    logger,
 	}
 	for _, target := range initial {
 		p.preparers[target.Address()] = target
 		p.accepters[target.Address()] = target
+		p.watchers[target.Address()] = target
 	}
 	return p
 }
@@ -256,6 +260,7 @@ func (p *MemoryProposer) AddAccepter(target Acceptor) error {
 		return ErrDuplicate
 	}
 	p.accepters[target.Address()] = target
+	p.watchers[target.Address()] = target
 	return nil
 }
 
@@ -295,6 +300,7 @@ func (p *MemoryProposer) RemoveAccepter(target Acceptor) error {
 		return ErrNotFound
 	}
 	delete(p.accepters, target.Address())
+	delete(p.watchers, target.Address())
 	return nil
 }
 
@@ -360,4 +366,23 @@ func (p *MemoryProposer) ListAccepters() (addrs []string, err error) {
 
 	sort.Strings(addrs)
 	return addrs, nil
+}
+
+// Watch the given key, emitting all states into the passed channel.
+func (p *MemoryProposer) Watch(ctx context.Context, key string, states chan<- []byte) error {
+	var watchers []StateWatcher
+	{
+		p.mtx.Lock()
+		for _, w := range p.watchers {
+			watchers = append(watchers, w)
+		}
+		p.mtx.Unlock()
+	}
+
+	if len(watchers) <= 0 {
+		return errors.New("no watchers available")
+	}
+
+	watcher := watchers[rand.Intn(len(watchers))]
+	return watcher.Watch(ctx, key, states)
 }

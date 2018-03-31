@@ -16,6 +16,7 @@ const (
 	PeerTypeAcceptor     = "acceptor"
 	PeerTypeProposer     = "proposer"
 	PeerTypeOperatorNode = "operator-node"
+	PeerTypeUserNode     = "user-node"
 )
 
 // Peer wraps a plain cluster.Peer and implements extension.Cluster.
@@ -67,5 +68,13 @@ func (p Peer) OperatorNodes(ctx context.Context) ([]extension.OperatorNode, erro
 
 // UserNodes implements extension.Cluster.
 func (p Peer) UserNodes(ctx context.Context) ([]extension.UserNode, error) {
-	return []extension.UserNode{}, nil // TODO(pb)
+	var (
+		hostports = p.Query(func(peerType string) bool { return strings.Contains(peerType, PeerTypeUserNode) })
+		users     = make([]extension.UserNode, len(hostports))
+	)
+	for i := range hostports {
+		u, _ := url.Parse(fmt.Sprintf("http://%s", hostports[i])) // TODO(pb): scheme
+		users[i] = httpapi.UserNodeClient{URL: u}                 // TODO(pb): HTTP client
+	}
+	return users, nil
 }

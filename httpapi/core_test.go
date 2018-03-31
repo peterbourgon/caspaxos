@@ -8,11 +8,14 @@ import (
 	"testing"
 
 	"github.com/go-kit/kit/log"
+
 	"github.com/peterbourgon/caspaxos/extension"
 	"github.com/peterbourgon/caspaxos/protocol"
 )
 
-func TestBasic(t *testing.T) {
+// TODO(pb): these tests are redundant with cmd/caspaxos-http tests; remove
+
+func TestProposersAndAcceptors(t *testing.T) {
 	// Build the cluster.
 	var (
 		logger = log.NewLogfmtLogger(testWriter{t})

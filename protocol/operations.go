@@ -15,6 +15,7 @@ type Proposer interface {
 	ConfigurationChanger
 	FastForwarder
 	AcceptorLister
+	StateWatcher
 }
 
 // ConfigurationChanger models the grow/shrink cluster responsibilities of a
@@ -50,6 +51,12 @@ type Acceptor interface {
 	Preparer
 	Accepter
 	RejectRemover
+	StateWatcher
+}
+
+// StateWatcher watches a key, yielding states on a user-supplied channel.
+type StateWatcher interface {
+	Watch(ctx context.Context, key string, states chan<- []byte) error
 }
 
 // Addresser models something with a unique address.

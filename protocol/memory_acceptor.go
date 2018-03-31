@@ -17,11 +17,12 @@ var ErrNotEqual = errors.New("not equal")
 
 // MemoryAcceptor persists data in-memory.
 type MemoryAcceptor struct {
-	mtx    sync.Mutex
-	addr   string
-	ages   map[string]Age
-	values map[string]acceptedValue
-	logger log.Logger
+	mtx      sync.Mutex
+	addr     string
+	ages     map[string]Age
+	values   map[string]acceptedValue
+	watchers watchers
+	logger   log.Logger
 }
 
 // An accepted value is associated with a key in an acceptor.
@@ -39,10 +40,11 @@ var zeroballot Ballot
 // Useful primarily for testing.
 func NewMemoryAcceptor(addr string, logger log.Logger) *MemoryAcceptor {
 	return &MemoryAcceptor{
-		addr:   addr,
-		ages:   map[string]Age{},
-		values: map[string]acceptedValue{},
-		logger: logger,
+		addr:     addr,
+		ages:     map[string]Age{},
+		values:   map[string]acceptedValue{},
+		watchers: watchers{},
+		logger:   logger,
 	}
 }
 
@@ -149,6 +151,10 @@ func (a *MemoryAcceptor) Accept(ctx context.Context, key string, age Age, b Ball
 	av.promise, av.accepted, av.value = zeroballot, b, value
 	a.values[key] = av
 
+	// Extension: broadcast the state change to any watchers.
+	// TODO(pb): be careful about deadlock on this one
+	a.watchers.broadcast(key, value)
+
 	// From the paper: "Return a confirmation."
 	return nil
 }
@@ -196,12 +202,47 @@ func (a *MemoryAcceptor) RemoveIfEqual(ctx context.Context, key string, state []
 		return nil // great, no work to do
 	}
 
+	// If the states don't match, that's an error.
 	if !bytes.Equal(av.value, state) {
 		return ErrNotEqual
 	}
 
+	// Otherwise, we delete the thing.
 	delete(a.values, key)
+
+	// Extension: broadcast the state change to any watchers.
+	// TODO(pb): be careful about deadlock on this one
+	a.watchers.broadcast(key, nil)
+
+	// Done.
 	return nil
+}
+
+// Watch for changes to key, sending current states along the passed chan.
+func (a *MemoryAcceptor) Watch(ctx context.Context, key string, states chan<- []byte) (err error) {
+	defer func() {
+		level.Debug(a.logger).Log(
+			"method", "Watch", "key", key,
+			"success", err == nil, "err", err,
+		)
+	}()
+
+	func() {
+		a.mtx.Lock()
+		defer a.mtx.Unlock()
+		a.watchers.subscribe(key, states)
+		s := a.values[key] // zero value is fine
+		states <- s.value  // send initial value, which can be nil
+	}()
+
+	defer func() {
+		a.mtx.Lock()
+		defer a.mtx.Unlock()
+		a.watchers.unsubscribe(key, states)
+	}()
+
+	<-ctx.Done() // block until canceled
+	return ctx.Err()
 }
 
 func (a *MemoryAcceptor) dumpValue(key string) []byte {
@@ -235,4 +276,39 @@ type AgeError struct {
 
 func (ae AgeError) Error() string {
 	return fmt.Sprintf("conflict: incoming age %s is younger than existing age %s", ae.Incoming, ae.Existing)
+}
+
+//
+//
+//
+
+type watchers map[string]map[chan<- []byte]bool
+
+func (w watchers) subscribe(key string, c chan<- []byte) {
+	chans, ok := w[key]
+	if !ok {
+		chans = map[chan<- []byte]bool{}
+	}
+	chans[c] = true
+	w[key] = chans
+}
+
+func (w watchers) unsubscribe(key string, c chan<- []byte) {
+	chans, ok := w[key]
+	if ok {
+		delete(chans, c)
+	}
+	if len(chans) <= 0 {
+		delete(w, key)
+	}
+}
+
+func (w watchers) broadcast(key string, state []byte) {
+	chans, ok := w[key]
+	if !ok {
+		return
+	}
+	for c := range chans {
+		c <- state
+	}
 }

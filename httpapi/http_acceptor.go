@@ -3,21 +3,24 @@ package httpapi
 import (
 	"bytes"
 	"context"
-	"errors"
 	"fmt"
 	"io/ioutil"
 	"net/http"
 	"net/url"
 	"regexp"
-	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gorilla/mux"
+	"github.com/pkg/errors"
 
+	"github.com/peterbourgon/caspaxos/extension"
+	"github.com/peterbourgon/caspaxos/internal/eventsource"
 	"github.com/peterbourgon/caspaxos/protocol"
 )
 
-// AcceptorServer provides an HTTP interface to an acceptor.
+// AcceptorServer wraps a core protocol.Acceptor, but provides the
+// extension.Acceptor methodset over HTTP.
 type AcceptorServer struct {
 	acceptor protocol.Acceptor
 	*mux.Router
@@ -50,6 +53,7 @@ func NewAcceptorServer(acceptor protocol.Acceptor) *AcceptorServer {
 		r.Methods("POST").Path("/accept/{key}").HeadersRegexp(ageHeaderKey, ageHeaderRegex, ballotHeaderKey, ballotHeaderRegex).HandlerFunc(as.handleAccept)
 		r.Methods("POST").Path("/reject-by-age").HeadersRegexp(ageHeaderKey, ageHeaderRegex).HandlerFunc(as.handleRejectByAge)
 		r.Methods("POST").Path("/remove-if-equal/{key}").HandlerFunc(as.handleRemoveIfEqual)
+		r.Methods("POST").Path("/watch/{key}").HandlerFunc(as.handleWatch)
 	}
 	as.Router = r
 	return as
@@ -123,11 +127,53 @@ func (as *AcceptorServer) handleRemoveIfEqual(w http.ResponseWriter, r *http.Req
 	fmt.Fprintln(w, "OK")
 }
 
+// Watch(ctx context.Context, key string, values chan<- []byte) error
+func (as *AcceptorServer) handleWatch(w http.ResponseWriter, r *http.Request) {
+	var (
+		key, _      = url.PathUnescape(mux.Vars(r)["key"])
+		states      = make(chan []byte)
+		errs        = make(chan error)
+		enc         = eventsource.NewEncoder(w)
+		ctx, cancel = context.WithCancel(r.Context())
+	)
+
+	go func() {
+		errs <- as.acceptor.Watch(ctx, key, states)
+	}()
+
+	// via eventsource.Handler.ServeHTTP
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Vary", "Accept")
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.WriteHeader(http.StatusOK)
+
+	for {
+		select {
+		case state := <-states:
+			_, value, err := parseVersionValue(state)
+			if err != nil {
+				cancel() // kill the watcher goroutine
+				<-errs   // wait for it to return
+				return   // done
+			}
+			if err := enc.Encode(eventsource.Event{Data: value}); err != nil {
+				cancel()
+				<-errs
+				return
+			}
+
+		case <-errs:
+			cancel() // no-op for linter
+			return   // the watcher goroutine is dead
+		}
+	}
+}
+
 //
 //
 //
 
-// AcceptorClient implements the protocol.Acceptor interface by making calls to
+// AcceptorClient implements the extension.Acceptor interface by making calls to
 // a remote AcceptorServer.
 type AcceptorClient struct {
 	// HTTPClient to make requests. Optional.
@@ -139,14 +185,20 @@ type AcceptorClient struct {
 	// URL of the remote AcceptorServer.
 	// Only scheme and host are used.
 	URL *url.URL
+
+	// WatchRetry is the time between reconnect attempts
+	// if a Watch session goes bad. Default of 1 second.
+	WatchRetry time.Duration
 }
 
-// Address implements protocol.Acceptor.
+var _ extension.Acceptor = (*AcceptorClient)(nil)
+
+// Address implements extension.Acceptor.
 func (ac AcceptorClient) Address() string {
 	return ac.URL.String()
 }
 
-// Prepare implements protocol.Acceptor.
+// Prepare implements extension.Acceptor.
 func (ac AcceptorClient) Prepare(ctx context.Context, key string, age protocol.Age, b protocol.Ballot) (value []byte, current protocol.Ballot, err error) {
 	u := *ac.URL
 	u.Path = fmt.Sprintf("/prepare/%s", url.PathEscape(key))
@@ -175,7 +227,7 @@ func (ac AcceptorClient) Prepare(ctx context.Context, key string, age protocol.A
 	return value, current, nil
 }
 
-// Accept implements protocol.Acceptor.
+// Accept implements extension.Acceptor.
 func (ac AcceptorClient) Accept(ctx context.Context, key string, age protocol.Age, b protocol.Ballot, value []byte) error {
 	u := *ac.URL
 	u.Path = fmt.Sprintf("/accept/%s", url.PathEscape(key))
@@ -196,7 +248,7 @@ func (ac AcceptorClient) Accept(ctx context.Context, key string, age protocol.Ag
 	return nil
 }
 
-// RejectByAge implements protocol.Acceptor.
+// RejectByAge implements extension.Acceptor.
 func (ac AcceptorClient) RejectByAge(ctx context.Context, ages []protocol.Age) error {
 	u := *ac.URL
 	u.Path = "/reject-by-age"
@@ -216,7 +268,7 @@ func (ac AcceptorClient) RejectByAge(ctx context.Context, ages []protocol.Age) e
 	return nil
 }
 
-// RemoveIfEqual implements protocol.Acceptor.
+// RemoveIfEqual implements extension.Acceptor.
 func (ac AcceptorClient) RemoveIfEqual(ctx context.Context, key string, state []byte) error {
 	u := *ac.URL
 	u.Path = fmt.Sprintf("/remove-if-equal/%s", url.PathEscape(key))
@@ -235,6 +287,30 @@ func (ac AcceptorClient) RemoveIfEqual(ctx context.Context, key string, state []
 	return nil
 }
 
+// Watch implements extension.Acceptor.
+func (ac AcceptorClient) Watch(ctx context.Context, key string, values chan<- []byte) error {
+	u := *ac.URL
+	u.Path = fmt.Sprintf("/watch/%s", url.PathEscape(key))
+	req, _ := http.NewRequest("POST", u.String(), nil)
+	req = req.WithContext(ctx)
+
+	retry := ac.WatchRetry
+	if retry <= 0 {
+		retry = time.Second
+	}
+
+	s := eventsource.New(req, retry) // TODO(pb): this uses DefaultClient
+	defer s.Close()
+
+	for {
+		ev, err := s.Read()
+		if err != nil {
+			return errors.Wrap(err, "remote acceptor EventSource error")
+		}
+		values <- ev.Data
+	}
+}
+
 func (ac AcceptorClient) httpClient() interface {
 	Do(*http.Request) (*http.Response, error)
 } {
@@ -243,53 +319,4 @@ func (ac AcceptorClient) httpClient() interface {
 		client = http.DefaultClient
 	}
 	return client
-}
-
-func setAge(h http.Header, age protocol.Age) {
-	h.Set(ageHeaderKey, age.String())
-}
-
-func setAges(h http.Header, ages []protocol.Age) {
-	for _, age := range ages {
-		h.Add(ageHeaderKey, age.String())
-	}
-}
-
-func setBallot(h http.Header, b protocol.Ballot) {
-	h.Set(ballotHeaderKey, b.String())
-}
-
-func getAge(h http.Header) protocol.Age {
-	counter, id := getHeaderPair(h.Get(ageHeaderKey), ageRe)
-	return protocol.Age{Counter: counter, ID: id}
-}
-
-func getAges(h http.Header) (ages []protocol.Age) {
-	for _, s := range h[ageHeaderKey] {
-		counter, id := getHeaderPair(s, ageRe)
-		ages = append(ages, protocol.Age{Counter: counter, ID: id})
-	}
-	return ages
-}
-
-func getBallot(h http.Header) protocol.Ballot {
-	s := h.Get(ballotHeaderKey)
-	if s == "ø" {
-		return protocol.Ballot{}
-	}
-	counter, id := getHeaderPair(s, ballotRe)
-	return protocol.Ballot{Counter: counter, ID: id}
-}
-
-func getHeaderPair(s string, re *regexp.Regexp) (uint64, string) {
-	matches := re.FindAllStringSubmatch(s, 1)
-	if len(matches) != 1 {
-		panic("bad input: '" + s + "' (regex: " + re.String() + ")")
-	}
-	if len(matches[0]) != 3 {
-		panic("bad input: '" + s + "' (regex: " + re.String() + ")")
-	}
-	counterstr, id := matches[0][1], matches[0][2]
-	counter, _ := strconv.ParseUint(counterstr, 10, 64)
-	return counter, id
 }
