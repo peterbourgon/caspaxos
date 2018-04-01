@@ -36,6 +36,8 @@ func (e CASError) Error() string {
 //
 
 // SimpleProposer wraps a protocol.Proposer and implements extension.Proposer.
+// Most methods are passthroughs, so embedding makes sense. The exception is
+// Propose, which we block by panicking.
 type SimpleProposer struct {
 	protocol.Proposer
 }
@@ -50,7 +52,7 @@ func NewSimpleProposer(target protocol.Proposer) *SimpleProposer {
 
 // Propose blocks calls to protocol.Proposer by panicking.
 func (p SimpleProposer) Propose(ctx context.Context, key string, f protocol.ChangeFunc) (state []byte, b protocol.Ballot, err error) {
-	panic("can't call Propose on extension.SimpleProposer")
+	panic("can't call Propose on extension.SimpleProposer; use Read or CAS instead")
 }
 
 // Read implements Proposer.
