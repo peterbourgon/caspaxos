@@ -19,10 +19,10 @@ import (
 	"github.com/peterbourgon/caspaxos/protocol"
 )
 
-// AcceptorServer wraps a core protocol.Acceptor, but provides the
-// extension.Acceptor methodset over HTTP.
+// AcceptorServer wraps an extension.Acceptor and provides its methodset over
+// HTTP. Best used with AcceptorClient.
 type AcceptorServer struct {
-	acceptor protocol.Acceptor
+	acceptor extension.Acceptor
 	*mux.Router
 }
 
@@ -127,7 +127,7 @@ func (as *AcceptorServer) handleRemoveIfEqual(w http.ResponseWriter, r *http.Req
 	fmt.Fprintln(w, "OK")
 }
 
-// Watch(ctx context.Context, key string, values chan<- []byte) error
+// Watch(ctx context.Context, key string, states chan<- []byte) error
 func (as *AcceptorServer) handleWatch(w http.ResponseWriter, r *http.Request) {
 	var (
 		key, _      = url.PathUnescape(mux.Vars(r)["key"])
@@ -150,13 +150,7 @@ func (as *AcceptorServer) handleWatch(w http.ResponseWriter, r *http.Request) {
 	for {
 		select {
 		case state := <-states:
-			_, value, err := parseVersionValue(state)
-			if err != nil {
-				cancel() // kill the watcher goroutine
-				<-errs   // wait for it to return
-				return   // done
-			}
-			if err := enc.Encode(eventsource.Event{Data: value}); err != nil {
+			if err := enc.Encode(eventsource.Event{Data: state}); err != nil {
 				cancel()
 				<-errs
 				return
@@ -178,9 +172,7 @@ func (as *AcceptorServer) handleWatch(w http.ResponseWriter, r *http.Request) {
 type AcceptorClient struct {
 	// HTTPClient to make requests. Optional.
 	// If nil, http.DefaultClient is used.
-	Client interface {
-		Do(*http.Request) (*http.Response, error)
-	}
+	Client HTTPClient
 
 	// URL of the remote AcceptorServer.
 	// Only scheme and host are used.
@@ -288,7 +280,7 @@ func (ac AcceptorClient) RemoveIfEqual(ctx context.Context, key string, state []
 }
 
 // Watch implements extension.Acceptor.
-func (ac AcceptorClient) Watch(ctx context.Context, key string, values chan<- []byte) error {
+func (ac AcceptorClient) Watch(ctx context.Context, key string, states chan<- []byte) error {
 	u := *ac.URL
 	u.Path = fmt.Sprintf("/watch/%s", url.PathEscape(key))
 	req, _ := http.NewRequest("POST", u.String(), nil)
@@ -307,13 +299,11 @@ func (ac AcceptorClient) Watch(ctx context.Context, key string, values chan<- []
 		if err != nil {
 			return errors.Wrap(err, "remote acceptor EventSource error")
 		}
-		values <- ev.Data
+		states <- ev.Data
 	}
 }
 
-func (ac AcceptorClient) httpClient() interface {
-	Do(*http.Request) (*http.Response, error)
-} {
+func (ac AcceptorClient) httpClient() HTTPClient {
 	client := ac.Client
 	if client == nil {
 		client = http.DefaultClient

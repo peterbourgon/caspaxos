@@ -17,8 +17,8 @@ import (
 	"github.com/peterbourgon/caspaxos/protocol"
 )
 
-// ProposerServer wraps a core protocol.Proposer, but
-// provides the extension.Proposer methodset over HTTP.
+// ProposerServer wraps an extension.Proposer and provides its methodset over
+// HTTP. Best used with ProposerClient.
 type ProposerServer struct {
 	proposer protocol.Proposer
 	*mux.Router
@@ -45,7 +45,6 @@ func NewProposerServer(proposer protocol.Proposer) *ProposerServer {
 		r.Methods("POST").Path("/fast-forward-increment/{key}").HandlerFunc(ps.handleFastForwardIncrement)
 		r.Methods("GET").Path("/list-preparers").HandlerFunc(ps.handleListPreparers)
 		r.Methods("GET").Path("/list-accepters").HandlerFunc(ps.handleListAccepters)
-		r.Methods("POST").Path("/watch/{key}").HandlerFunc(ps.handleWatch)
 	}
 	ps.Router = r
 	return ps
@@ -69,7 +68,7 @@ func (ps *ProposerServer) handleRead(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	setBallot(w.Header(), b)
+	setBallot(w.Header(), b) // not strictly necessary, I don't think
 	setVersion(w.Header(), version)
 	w.Write(value)
 }
@@ -225,10 +224,6 @@ func (ps *ProposerServer) handleListAccepters(w http.ResponseWriter, r *http.Req
 	}
 }
 
-func (ps *ProposerServer) handleWatch(w http.ResponseWriter, r *http.Request) {
-	http.Error(w, "ProposerServer handleWatch not yet implemented", http.StatusNotImplemented)
-}
-
 //
 //
 //
@@ -238,9 +233,7 @@ func (ps *ProposerServer) handleWatch(w http.ResponseWriter, r *http.Request) {
 type ProposerClient struct {
 	// HTTPClient to make requests. Optional.
 	// If nil, http.DefaultClient is used.
-	Client interface {
-		Do(*http.Request) (*http.Response, error)
-	}
+	Client HTTPClient
 
 	// URL of the remote ProposerServer.
 	// Only scheme and host are used.
@@ -430,9 +423,7 @@ func (pc ProposerClient) postString(path, body string) error {
 	return nil
 }
 
-func (pc ProposerClient) httpClient() interface {
-	Do(*http.Request) (*http.Response, error)
-} {
+func (pc ProposerClient) httpClient() HTTPClient {
 	client := pc.Client
 	if client == nil {
 		client = http.DefaultClient

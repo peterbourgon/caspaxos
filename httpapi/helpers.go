@@ -11,6 +11,11 @@ import (
 	"github.com/peterbourgon/caspaxos/protocol"
 )
 
+// HTTPClient models *http.Client.
+type HTTPClient interface {
+	Do(*http.Request) (*http.Response, error)
+}
+
 func setAge(h http.Header, age protocol.Age) {
 	h.Set(ageHeaderKey, age.String())
 }
