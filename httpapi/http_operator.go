@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -8,6 +9,8 @@ import (
 	"math/rand"
 	"net/http"
 	"net/url"
+	"strings"
+	"time"
 
 	"github.com/gorilla/mux"
 	"github.com/pkg/errors"
@@ -28,7 +31,8 @@ var _ http.Handler = (*OperatorServer)(nil)
 
 // NewOperatorServer returns a usable OperatorServer wrapping the passed
 // operator node. Many methods are implemented as blind proxies to proposer or
-// acceptor nodes, for which the HTTP client is used; if nil, http.DefaultClient is used.
+// acceptor nodes, for which the HTTP client is used; if nil, http.DefaultClient
+// is used.
 func NewOperatorServer(op extension.Operator, c HTTPClient) *OperatorServer {
 	if c == nil {
 		c = http.DefaultClient
@@ -264,56 +268,178 @@ type OperatorClient struct {
 	// If nil, http.DefaultClient is used.
 	Client HTTPClient
 
-	// URL of the remote AcceptorServer.
+	// URL of the remote OperatorServer.
 	// Only scheme and host are used.
 	URL *url.URL
+
+	// WatchRetry is the time between reconnect attempts
+	// if a Watch session goes bad. Default of 1 second.
+	WatchRetry time.Duration
 }
 
 var _ extension.Operator = (*OperatorClient)(nil)
 
-// Address implements Operator.
+// Address implements extension.Operator.
 func (oc OperatorClient) Address() string {
 	return oc.URL.String()
 }
 
-// Read implements Operator.
+// Read implements extension.Operator.
 func (oc OperatorClient) Read(ctx context.Context, key string) (version uint64, value []byte, err error) {
-	return version, value, errors.New("OperatorClient Read not yet implemented")
+	u := *oc.URL
+	u.Path = fmt.Sprintf("/read/%s", url.PathEscape(key))
+	req, _ := http.NewRequest("POST", u.String(), nil)
+	req = req.WithContext(ctx)
+	resp, err := oc.httpClient().Do(req)
+	if err != nil {
+		return 0, nil, err
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		buf, _ := ioutil.ReadAll(resp.Body)
+		return 0, nil, errors.New(strings.TrimSpace(string(buf)))
+	}
+
+	version = getVersion(resp.Header)
+	value, err = ioutil.ReadAll(resp.Body)
+	return version, value, err
 }
 
-// CAS implements Operator.
+// CAS implements extension.Operator.
 func (oc OperatorClient) CAS(ctx context.Context, key string, currentVersion uint64, nextValue []byte) (version uint64, value []byte, err error) {
-	return version, value, errors.New("OperatorClient CAS not yet implemented")
+	u := *oc.URL
+	u.Path = fmt.Sprintf("/cas/%s", url.PathEscape(key))
+	req, _ := http.NewRequest("POST", u.String(), bytes.NewReader(nextValue))
+	setVersion(req.Header, currentVersion)
+	req = req.WithContext(ctx)
+	resp, err := oc.httpClient().Do(req)
+	if err != nil {
+		return version, value, err
+	}
+
+	switch {
+	case resp.StatusCode == http.StatusPreconditionFailed: // 412 -> CASError
+		buf, _ := ioutil.ReadAll(resp.Body)
+		return version, value, extension.CASError{Err: errors.New(strings.TrimSpace(string(buf)))}
+	case resp.StatusCode != http.StatusOK:
+		buf, _ := ioutil.ReadAll(resp.Body)
+		return version, value, errors.New(strings.TrimSpace(string(buf)))
+	}
+
+	version = getVersion(resp.Header)
+	value, err = ioutil.ReadAll(resp.Body)
+	return version, value, err
 }
 
-// Watch implements Operator.
+// Watch implements extension.Operator.
 func (oc OperatorClient) Watch(ctx context.Context, key string, values chan<- []byte) error {
-	return errors.New("OperatorClient Watch not yet implemented")
+	u := *oc.URL
+	u.Path = fmt.Sprintf("/watch/%s", url.PathEscape(key))
+	req, _ := http.NewRequest("POST", u.String(), nil)
+	req = req.WithContext(ctx)
+
+	retry := oc.WatchRetry
+	if retry <= 0 {
+		retry = time.Second
+	}
+
+	s := eventsource.New(req, retry) // TODO(pb): this uses DefaultClient
+	defer s.Close()
+
+	for {
+		ev, err := s.Read()
+		if err != nil {
+			return errors.Wrap(err, "remote operator EventSource error")
+		}
+		values <- ev.Data
+	}
 }
 
-// ClusterState implements Operator.
+// ClusterState implements extension.Operator.
 func (oc OperatorClient) ClusterState(ctx context.Context) (s extension.ClusterState, err error) {
-	return s, errors.New("OperatorClient ClusterState not yet implemented")
+	u := *oc.URL
+	u.Path = "/cluster-state"
+	req, _ := http.NewRequest("GET", u.String(), nil)
+	req = req.WithContext(ctx)
+	resp, err := oc.httpClient().Do(req)
+	if err != nil {
+		return s, errors.Wrap(err, "querying remote operator server")
+	}
+	if resp.StatusCode != http.StatusOK {
+		buf, _ := ioutil.ReadAll(resp.Body)
+		body := strings.TrimSpace(string(buf))
+		return s, errors.Wrapf(err, "remote operator server returned %d (%s)", resp.StatusCode, body)
+	}
+	return s, json.NewDecoder(resp.Body).Decode(&s)
 }
 
-// ListAcceptors implements Operator.
-func (oc OperatorClient) ListAcceptors(ctx context.Context) ([]string, error) {
-	return nil, errors.New("OperatorClient ListAcceptors not yet implemented")
+// ListAcceptors implements extension.Operator.
+func (oc OperatorClient) ListAcceptors(ctx context.Context) (a []string, err error) {
+	u := *oc.URL
+	u.Path = "/list-acceptors"
+	req, _ := http.NewRequest("GET", u.String(), nil)
+	req = req.WithContext(ctx)
+	resp, err := oc.httpClient().Do(req)
+	if err != nil {
+		return a, errors.Wrap(err, "querying remote operator server")
+	}
+	if resp.StatusCode != http.StatusOK {
+		buf, _ := ioutil.ReadAll(resp.Body)
+		body := strings.TrimSpace(string(buf))
+		return a, errors.Wrapf(err, "remote operator server returned %d (%s)", resp.StatusCode, body)
+	}
+	return a, json.NewDecoder(resp.Body).Decode(&a)
 }
 
-// AddAcceptor implements Operator.
+// AddAcceptor implements extension.Operator.
 func (oc OperatorClient) AddAcceptor(ctx context.Context, target protocol.Acceptor) error {
-	return errors.New("OperatorClient AddAcceptor not yet implemented")
+	u := *oc.URL
+	u.Path = "/add-acceptor"
+	req, _ := http.NewRequest("POST", u.String(), nil)
+	req.Body = ioutil.NopCloser(strings.NewReader(target.Address()))
+	req = req.WithContext(ctx)
+	resp, err := oc.httpClient().Do(req)
+	if err != nil {
+		return errors.Wrap(err, "querying remote operator server")
+	}
+	if resp.StatusCode != http.StatusOK {
+		buf, _ := ioutil.ReadAll(resp.Body)
+		body := strings.TrimSpace(string(buf))
+		return errors.Wrapf(err, "remote operator server returned %d (%s)", resp.StatusCode, body)
+	}
+	return nil
 }
 
-// RemoveAcceptor implements Operator.
+// RemoveAcceptor implements extension.Operator.
 func (oc OperatorClient) RemoveAcceptor(ctx context.Context, target protocol.Acceptor) error {
-	return errors.New("OperatorClient RemoveAcceptor not yet implemented")
+	u := *oc.URL
+	u.Path = "/remove-acceptor"
+	req, _ := http.NewRequest("POST", u.String(), nil)
+	req.Body = ioutil.NopCloser(strings.NewReader(target.Address()))
+	req = req.WithContext(ctx)
+	resp, err := oc.httpClient().Do(req)
+	if err != nil {
+		return errors.Wrap(err, "querying remote operator server")
+	}
+	if resp.StatusCode != http.StatusOK {
+		buf, _ := ioutil.ReadAll(resp.Body)
+		body := strings.TrimSpace(string(buf))
+		return errors.Wrapf(err, "remote operator server returned %d (%s)", resp.StatusCode, body)
+	}
+	return nil
 }
 
-// ListProposers implements Operator.
-func (oc OperatorClient) ListProposers(ctx context.Context) ([]string, error) {
-	return nil, errors.New("OperatorClient ListProposers not yet implemented")
+// ListProposers implements extension.Operator.
+func (oc OperatorClient) ListProposers(ctx context.Context) (a []string, err error) {
+	u := *oc.URL
+	u.Path = "/list-proposers"
+	req, _ := http.NewRequest("GET", u.String(), nil)
+	req = req.WithContext(ctx)
+	resp, err := oc.httpClient().Do(req)
+	if err != nil {
+		return a, errors.Wrap(err, "querying remote operator server")
+	}
+	return a, json.NewDecoder(resp.Body).Decode(&a)
 }
 
 func (oc OperatorClient) httpClient() HTTPClient {

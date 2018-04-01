@@ -212,11 +212,7 @@ func (ac AcceptorClient) Prepare(ctx context.Context, key string, age protocol.A
 	}
 
 	value, err = ioutil.ReadAll(resp.Body)
-	if err != nil {
-		return value, current, err
-	}
-
-	return value, current, nil
+	return value, current, err
 }
 
 // Accept implements extension.Acceptor.

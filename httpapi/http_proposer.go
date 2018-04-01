@@ -264,8 +264,8 @@ func (pc ProposerClient) Read(ctx context.Context, key string) (version uint64, 
 	}
 
 	version = getVersion(resp.Header)
-	value, _ = ioutil.ReadAll(resp.Body)
-	return version, value, nil
+	value, err = ioutil.ReadAll(resp.Body)
+	return version, value, err
 }
 
 // CAS implements extension.Proposer.
@@ -290,8 +290,8 @@ func (pc ProposerClient) CAS(ctx context.Context, key string, currentVersion uin
 	}
 
 	version = getVersion(resp.Header)
-	value, _ = ioutil.ReadAll(resp.Body)
-	return version, value, nil
+	value, err = ioutil.ReadAll(resp.Body)
+	return version, value, err
 }
 
 // IdentityRead implements extension.Proposer.
