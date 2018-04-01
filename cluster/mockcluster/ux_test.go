@@ -23,8 +23,8 @@ func TestMockClusterUX(t *testing.T) {
 		p1     = extension.NewSimpleProposer(protocol.NewMemoryProposer("p1", log.With(logger, "p", 1)))
 		p2     = extension.NewSimpleProposer(protocol.NewMemoryProposer("p2", log.With(logger, "p", 2)))
 		p3     = extension.NewSimpleProposer(protocol.NewMemoryProposer("p3", log.With(logger, "p", 3)))
-		o1     = extension.NewClusterOperator2("o1", c, log.With(logger, "o", 1))
-		o2     = extension.NewClusterOperator2("o2", c, log.With(logger, "o", 2))
+		o1     = extension.NewClusterOperator("o1", c, log.With(logger, "o", 1))
+		o2     = extension.NewClusterOperator("o2", c, log.With(logger, "o", 2))
 	)
 
 	// Have each node join the cluster.
