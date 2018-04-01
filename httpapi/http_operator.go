@@ -87,12 +87,12 @@ func (oc OperatorClient) Watch(ctx context.Context, key string, values chan<- []
 }
 
 // ClusterState implements Operator.
-func (oc OperatorClient) ClusterState(ctx context.Context) (s extension.ClusterState2, err error) {
+func (oc OperatorClient) ClusterState(ctx context.Context) (s extension.ClusterState, err error) {
 	return s, errors.New("OperatorClient ClusterState not yet implemented")
 }
 
 // ListAcceptors implements Operator.
-func (oc OperatorClient) ListAcceptors() ([]string, error) {
+func (oc OperatorClient) ListAcceptors(ctx context.Context) ([]string, error) {
 	return nil, errors.New("OperatorClient ListAcceptors not yet implemented")
 }
 
@@ -107,7 +107,7 @@ func (oc OperatorClient) RemoveAcceptor(ctx context.Context, target protocol.Acc
 }
 
 // ListProposers implements Operator.
-func (oc OperatorClient) ListProposers() ([]string, error) {
+func (oc OperatorClient) ListProposers(ctx context.Context) ([]string, error) {
 	return nil, errors.New("OperatorClient ListProposers not yet implemented")
 }
 
