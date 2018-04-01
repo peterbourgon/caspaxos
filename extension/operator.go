@@ -20,10 +20,10 @@ type Operator interface {
 
 	// Admin API
 	ClusterState(ctx context.Context) (ClusterState2, error)
-	ListAcceptors() ([]string, error)
+	ListAcceptors(ctx context.Context) ([]string, error)
 	AddAcceptor(ctx context.Context, target protocol.Acceptor) error
 	RemoveAcceptor(ctx context.Context, target protocol.Acceptor) error
-	ListProposers() ([]string, error)
+	ListProposers(ctx context.Context) ([]string, error)
 	AddProposer(ctx context.Context, target protocol.Proposer) error
 	RemoveProposer(ctx context.Context, target protocol.Proposer) error
 }
@@ -122,11 +122,11 @@ func (op ClusterOperator2) ClusterState(ctx context.Context) (s ClusterState2, e
 		return s, err
 	}
 	for _, op := range operators {
-		proposers, err := op.ListProposers()
+		proposers, err := op.ListProposers(ctx)
 		if err != nil {
 			return s, err
 		}
-		acceptors, err := op.ListAcceptors()
+		acceptors, err := op.ListAcceptors(ctx)
 		if err != nil {
 			return s, err
 		}
@@ -141,8 +141,16 @@ func (op ClusterOperator2) ClusterState(ctx context.Context) (s ClusterState2, e
 }
 
 // ListAcceptors implements Operator.
-func (op ClusterOperator2) ListAcceptors() ([]string, error) {
-	return nil, errors.New("ClusterOperator ListAcceptors not yet implemented")
+func (op ClusterOperator2) ListAcceptors(ctx context.Context) (results []string, err error) {
+	a, err := op.cluster.Acceptors(ctx)
+	if err != nil {
+		return results, err
+	}
+	results = make([]string, len(a))
+	for i := range a {
+		results[i] = a[i].Address()
+	}
+	return results, nil
 }
 
 // AddAcceptor implements Operator.
@@ -172,8 +180,16 @@ func (op ClusterOperator2) RemoveAcceptor(ctx context.Context, target protocol.A
 }
 
 // ListProposers implements Operator.
-func (op ClusterOperator2) ListProposers() ([]string, error) {
-	return nil, errors.New("ClusterOperator ListAcceptors not yet implemented")
+func (op ClusterOperator2) ListProposers(ctx context.Context) (results []string, err error) {
+	a, err := op.cluster.Proposers(ctx)
+	if err != nil {
+		return results, err
+	}
+	results = make([]string, len(a))
+	for i := range a {
+		results[i] = a[i].Address()
+	}
+	return results, nil
 }
 
 // AddProposer implements Operator.
