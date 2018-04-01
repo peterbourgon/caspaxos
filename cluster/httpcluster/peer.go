@@ -66,29 +66,3 @@ func (p Peer) Operators(ctx context.Context) ([]extension.Operator, error) {
 	}
 	return operators, nil
 }
-
-// OperatorNodes implements extension.Cluster.
-func (p Peer) OperatorNodes(ctx context.Context) ([]extension.OperatorNode, error) {
-	var (
-		hostports = p.Query(func(peerType string) bool { return strings.Contains(peerType, PeerTypeOperatorNode) })
-		operators = make([]extension.OperatorNode, len(hostports))
-	)
-	for i := range hostports {
-		u, _ := url.Parse(fmt.Sprintf("http://%s", hostports[i])) // TODO(pb): scheme
-		operators[i] = httpapi.OperatorNodeClient{URL: u}         // TODO(pb): HTTP client
-	}
-	return operators, nil
-}
-
-// UserNodes implements extension.Cluster.
-func (p Peer) UserNodes(ctx context.Context) ([]extension.UserNode, error) {
-	var (
-		hostports = p.Query(func(peerType string) bool { return strings.Contains(peerType, PeerTypeUserNode) })
-		users     = make([]extension.UserNode, len(hostports))
-	)
-	for i := range hostports {
-		u, _ := url.Parse(fmt.Sprintf("http://%s", hostports[i])) // TODO(pb): scheme
-		users[i] = httpapi.UserNodeClient{URL: u}                 // TODO(pb): HTTP client
-	}
-	return users, nil
-}
