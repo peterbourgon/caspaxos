@@ -2,10 +2,10 @@ package extension
 
 import (
 	"context"
+	"math/rand"
 
 	"github.com/go-kit/kit/log"
 	"github.com/peterbourgon/caspaxos/protocol"
-	"github.com/pkg/errors"
 )
 
 // Operator models the functionality that a user or admin needs.
@@ -20,12 +20,10 @@ type Operator interface {
 
 	// Admin API
 	ClusterState(ctx context.Context) (ClusterState, error)
+	ListProposers(ctx context.Context) ([]string, error)
 	ListAcceptors(ctx context.Context) ([]string, error)
 	AddAcceptor(ctx context.Context, target protocol.Acceptor) error
 	RemoveAcceptor(ctx context.Context, target protocol.Acceptor) error
-	ListProposers(ctx context.Context) ([]string, error)
-	AddProposer(ctx context.Context, target protocol.Proposer) error
-	RemoveProposer(ctx context.Context, target protocol.Proposer) error
 }
 
 // ClusterState captures the current state of the cluster.
@@ -80,17 +78,59 @@ func (op ClusterOperator) Address() string {
 
 // Read implements Operator.
 func (op ClusterOperator) Read(ctx context.Context, key string) (version uint64, value []byte, err error) {
-	return version, value, errors.New("ClusterOperator Read not yet implemented")
+	a, err := op.cluster.Proposers(ctx)
+	if err != nil {
+		return version, value, err
+	}
+	target := a[rand.Intn(len(a))]
+	return target.Read(ctx, key)
 }
 
 // CAS implements Operator.
 func (op ClusterOperator) CAS(ctx context.Context, key string, currentVersion uint64, nextValue []byte) (version uint64, value []byte, err error) {
-	return version, value, errors.New("ClusterOperator CAS not yet implemented")
+	a, err := op.cluster.Proposers(ctx)
+	if err != nil {
+		return version, value, err
+	}
+	target := a[rand.Intn(len(a))]
+	return target.CAS(ctx, key, currentVersion, nextValue)
 }
 
-// Watch implements Operator.
+// Watch implements Operator. Since the user API wants values, and the acceptors
+// emits states, this method performs (Version, Value) parsing.
 func (op ClusterOperator) Watch(ctx context.Context, key string, values chan<- []byte) error {
-	return errors.New("ClusterOperator Watch not yet implemented")
+	a, err := op.cluster.Acceptors(ctx)
+	if err != nil {
+		return err
+	}
+
+	var (
+		target         = a[rand.Intn(len(a))]
+		states         = make(chan []byte)
+		errs           = make(chan error, 1)
+		subctx, cancel = context.WithCancel(ctx)
+	)
+
+	go func() {
+		errs <- target.Watch(subctx, key, states)
+	}()
+
+	for {
+		select {
+		case state := <-states:
+			_, value, err := parseVersionValue(state)
+			if err != nil {
+				cancel()
+				<-errs
+				return err
+			}
+			values <- value
+
+		case err := <-errs:
+			cancel() // no-op for linter
+			return err
+		}
+	}
 }
 
 // ClusterState implements Operator.
@@ -147,6 +187,19 @@ func (op ClusterOperator) ClusterState(ctx context.Context) (s ClusterState, err
 	return s, nil
 }
 
+// ListProposers implements Operator.
+func (op ClusterOperator) ListProposers(ctx context.Context) (results []string, err error) {
+	a, err := op.cluster.Proposers(ctx)
+	if err != nil {
+		return results, err
+	}
+	results = make([]string, len(a))
+	for i := range a {
+		results[i] = a[i].Address()
+	}
+	return results, nil
+}
+
 // ListAcceptors implements Operator.
 func (op ClusterOperator) ListAcceptors(ctx context.Context) (results []string, err error) {
 	a, err := op.cluster.Acceptors(ctx)
@@ -184,29 +237,6 @@ func (op ClusterOperator) RemoveAcceptor(ctx context.Context, target protocol.Ac
 		confChangers[i] = proposers[i]
 	}
 	return protocol.ShrinkCluster(ctx, target, confChangers)
-}
-
-// ListProposers implements Operator.
-func (op ClusterOperator) ListProposers(ctx context.Context) (results []string, err error) {
-	a, err := op.cluster.Proposers(ctx)
-	if err != nil {
-		return results, err
-	}
-	results = make([]string, len(a))
-	for i := range a {
-		results[i] = a[i].Address()
-	}
-	return results, nil
-}
-
-// AddProposer implements Operator.
-func (op ClusterOperator) AddProposer(ctx context.Context, target protocol.Proposer) error {
-	return errors.New("ClusterOperator AddProposer not yet implemented")
-}
-
-// RemoveProposer implements Operator.
-func (op ClusterOperator) RemoveProposer(ctx context.Context, target protocol.Proposer) error {
-	return errors.New("ClusterOperator RemoveProposer not yet implemented")
 }
 
 func denil(s []string) []string {
