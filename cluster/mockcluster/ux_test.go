@@ -49,4 +49,7 @@ func TestMockClusterUX(t *testing.T) {
 
 type testWriter struct{ t *testing.T }
 
-func (w testWriter) Write(p []byte) (int, error) { w.t.Logf("%s", string(p)); return len(p), nil }
+func (w testWriter) Write(p []byte) (int, error) {
+	w.t.Logf("%s", string(p))
+	return len(p), nil
+}

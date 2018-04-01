@@ -92,13 +92,3 @@ func (c *Cluster) Operators(context.Context) (result []extension.Operator, err e
 	}
 	return result, nil
 }
-
-// OperatorNodes implements extension.Cluster.
-func (c *Cluster) OperatorNodes(context.Context) (result []extension.OperatorNode, err error) {
-	return result, errors.New("mockcluster.Cluster OperatorNodes not implemented") // TODO(pb): remove ASAP
-}
-
-// UserNodes implements extension.Cluster.
-func (c *Cluster) UserNodes(context.Context) (result []extension.UserNode, err error) {
-	return result, errors.New("mockcluster.Cluster UserNodes not implemented") // TODO(pb): remove ASAP
-}
