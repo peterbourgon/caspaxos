@@ -7,6 +7,4 @@ type Cluster interface {
 	Acceptors(context.Context) ([]Acceptor, error)
 	Proposers(context.Context) ([]Proposer, error)
 	Operators(context.Context) ([]Operator, error)
-	OperatorNodes(context.Context) ([]OperatorNode, error)
-	UserNodes(context.Context) ([]UserNode, error)
 }

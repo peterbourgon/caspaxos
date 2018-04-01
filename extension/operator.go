@@ -19,7 +19,7 @@ type Operator interface {
 	Watch(ctx context.Context, key string, values chan<- []byte) error
 
 	// Admin API
-	ClusterState(ctx context.Context) (ClusterState2, error)
+	ClusterState(ctx context.Context) (ClusterState, error)
 	ListAcceptors(ctx context.Context) ([]string, error)
 	AddAcceptor(ctx context.Context, target protocol.Acceptor) error
 	RemoveAcceptor(ctx context.Context, target protocol.Acceptor) error
@@ -28,11 +28,18 @@ type Operator interface {
 	RemoveProposer(ctx context.Context, target protocol.Proposer) error
 }
 
-// ClusterState2 captures the current state of the cluster.
-type ClusterState2 struct {
+// ClusterState captures the current state of the cluster.
+type ClusterState struct {
 	Acceptors []string        `json:"acceptors"`
 	Proposers []ProposerState `json:"proposers"`
 	Operators []OperatorState `json:"operators"`
+}
+
+// ProposerState captures the current state of a proposer in the cluster.
+type ProposerState struct {
+	Address   string   `json:"address"`
+	Preparers []string `json:"preparers"`
+	Accepters []string `json:"accepters"`
 }
 
 // OperatorState captures the current state of an operator in the cluster.
@@ -46,20 +53,20 @@ type OperatorState struct {
 //
 //
 
-// ClusterOperator2 provides Operator methods over a cluster.
-type ClusterOperator2 struct {
+// ClusterOperator provides Operator methods over a cluster.
+type ClusterOperator struct {
 	address string
 	cluster Cluster
 	logger  log.Logger
 }
 
-var _ Operator = (*ClusterOperator2)(nil)
+var _ Operator = (*ClusterOperator)(nil)
 
-// NewClusterOperator2 returns a usable ClusterOperator, which is an
+// NewClusterOperator returns a usable ClusterOperator, which is an
 // implementation of the operator node interface that wraps the passed cluster.
 // It should be uniquely identified by address.
-func NewClusterOperator2(address string, c Cluster, logger log.Logger) *ClusterOperator2 {
-	return &ClusterOperator2{
+func NewClusterOperator(address string, c Cluster, logger log.Logger) *ClusterOperator {
+	return &ClusterOperator{
 		address: address,
 		cluster: c,
 		logger:  logger,
@@ -67,27 +74,27 @@ func NewClusterOperator2(address string, c Cluster, logger log.Logger) *ClusterO
 }
 
 // Address implements Operator.
-func (op ClusterOperator2) Address() string {
+func (op ClusterOperator) Address() string {
 	return op.address
 }
 
 // Read implements Operator.
-func (op ClusterOperator2) Read(ctx context.Context, key string) (version uint64, value []byte, err error) {
+func (op ClusterOperator) Read(ctx context.Context, key string) (version uint64, value []byte, err error) {
 	return version, value, errors.New("ClusterOperator Read not yet implemented")
 }
 
 // CAS implements Operator.
-func (op ClusterOperator2) CAS(ctx context.Context, key string, currentVersion uint64, nextValue []byte) (version uint64, value []byte, err error) {
+func (op ClusterOperator) CAS(ctx context.Context, key string, currentVersion uint64, nextValue []byte) (version uint64, value []byte, err error) {
 	return version, value, errors.New("ClusterOperator CAS not yet implemented")
 }
 
 // Watch implements Operator.
-func (op ClusterOperator2) Watch(ctx context.Context, key string, values chan<- []byte) error {
+func (op ClusterOperator) Watch(ctx context.Context, key string, values chan<- []byte) error {
 	return errors.New("ClusterOperator Watch not yet implemented")
 }
 
 // ClusterState implements Operator.
-func (op ClusterOperator2) ClusterState(ctx context.Context) (s ClusterState2, err error) {
+func (op ClusterOperator) ClusterState(ctx context.Context) (s ClusterState, err error) {
 	acceptors, err := op.cluster.Acceptors(ctx)
 	if err != nil {
 		return s, err
@@ -141,7 +148,7 @@ func (op ClusterOperator2) ClusterState(ctx context.Context) (s ClusterState2, e
 }
 
 // ListAcceptors implements Operator.
-func (op ClusterOperator2) ListAcceptors(ctx context.Context) (results []string, err error) {
+func (op ClusterOperator) ListAcceptors(ctx context.Context) (results []string, err error) {
 	a, err := op.cluster.Acceptors(ctx)
 	if err != nil {
 		return results, err
@@ -154,7 +161,7 @@ func (op ClusterOperator2) ListAcceptors(ctx context.Context) (results []string,
 }
 
 // AddAcceptor implements Operator.
-func (op ClusterOperator2) AddAcceptor(ctx context.Context, target protocol.Acceptor) error {
+func (op ClusterOperator) AddAcceptor(ctx context.Context, target protocol.Acceptor) error {
 	proposers, err := op.cluster.Proposers(ctx)
 	if err != nil {
 		return err
@@ -167,7 +174,7 @@ func (op ClusterOperator2) AddAcceptor(ctx context.Context, target protocol.Acce
 }
 
 // RemoveAcceptor implements Operator.
-func (op ClusterOperator2) RemoveAcceptor(ctx context.Context, target protocol.Acceptor) error {
+func (op ClusterOperator) RemoveAcceptor(ctx context.Context, target protocol.Acceptor) error {
 	proposers, err := op.cluster.Proposers(ctx)
 	if err != nil {
 		return err
@@ -180,7 +187,7 @@ func (op ClusterOperator2) RemoveAcceptor(ctx context.Context, target protocol.A
 }
 
 // ListProposers implements Operator.
-func (op ClusterOperator2) ListProposers(ctx context.Context) (results []string, err error) {
+func (op ClusterOperator) ListProposers(ctx context.Context) (results []string, err error) {
 	a, err := op.cluster.Proposers(ctx)
 	if err != nil {
 		return results, err
@@ -193,11 +200,18 @@ func (op ClusterOperator2) ListProposers(ctx context.Context) (results []string,
 }
 
 // AddProposer implements Operator.
-func (op ClusterOperator2) AddProposer(ctx context.Context, target protocol.Proposer) error {
+func (op ClusterOperator) AddProposer(ctx context.Context, target protocol.Proposer) error {
 	return errors.New("ClusterOperator AddProposer not yet implemented")
 }
 
 // RemoveProposer implements Operator.
-func (op ClusterOperator2) RemoveProposer(ctx context.Context, target protocol.Proposer) error {
+func (op ClusterOperator) RemoveProposer(ctx context.Context, target protocol.Proposer) error {
 	return errors.New("ClusterOperator RemoveProposer not yet implemented")
+}
+
+func denil(s []string) []string {
+	if s == nil {
+		s = []string{}
+	}
+	return s
 }
