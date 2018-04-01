@@ -1,3 +1,3 @@
-// Package httpcluster enhances a plain cluster peer with extension.Cluster
+// Package httpcluster enhances a plain cluster.Peer with extension.Cluster
 // behavior. It assumes peers in the cluster serve httpapi APIs.
 package httpcluster
